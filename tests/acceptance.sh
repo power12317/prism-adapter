@@ -50,17 +50,21 @@ assert root.stat().st_uid == 10001 and (root.stat().st_mode & 0o777) == 0o700
 assert os.access(Path.home(), os.W_OK)
 (root/'persistence-marker').write_text('restart-survives')
 processes = []
+servers = []
 for p in Path('/proc').glob('[0-9]*/cmdline'):
     try:
         cmd = p.read_bytes().split(b'\0')
         processes.append(cmd)
-        if b'server.py' in cmd:
+        if b'server.py' in cmd and Path(os.fsdecode(cmd[0])).name.startswith('python'):
             status = (p.parent/'status').read_text()
-            assert 'Uid:\t10001\t10001\t10001\t10001' in status
-            assert 'CapEff:\t0000000000000000' in status
+            fields = dict(line.split(':', 1) for line in status.splitlines() if ':' in line)
+            assert set(fields['Uid'].split()) == {'10001'}, fields['Uid']
+            assert int(fields['CapEff'].strip(), 16) == 0, fields['CapEff']
+            assert fields['NoNewPrivs'].strip() == '1'
+            servers.append(p.parent.name)
     except FileNotFoundError:
         pass
-assert any(b'server.py' in p for p in processes)
+assert len(servers) == 1, servers
 assert not any(b'/opt/chromium/chrome' in p for p in processes), 'health must not launch browser'
 print('permissions, zero runtime capabilities, writable HOME and lazy browser: passed')
 PY
