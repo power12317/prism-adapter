@@ -73,7 +73,7 @@ docker compose -f docker-compose.prism.yml logs --tail=100 prism-adapter
 
 Compose 使用 `init: true` 回收浏览器子进程，并提供 1 GiB `/dev/shm` 容量以支持 Chromium 的进程间共享内存；这是容量上限，不是预留 1 GiB 内存，也不改变适配器原有并发或内存策略。默认浏览器模式、缓存和所有业务协议均保持 CPA 基线版本的行为。
 
-Chromium 的 user-namespace 和 seccomp sandbox 保持开启。附件在 Moby 默认 seccomp 规则上只添加 `clone/setns/unshare`，不使用 `privileged`、`SYS_ADMIN` 或 `--no-sandbox`。宿主机需要允许非特权用户命名空间；如果宿主机的 AppArmor/SELinux 额外禁止它，应根据主机审计日志处理该限制，不要直接关闭 sandbox。入口的有限权限仅用于目录初始化；适配器进程的有效 capabilities 为 0。
+Chromium 的 user-namespace 和 seccomp sandbox 保持开启。附件在 Moby 默认 seccomp 规则上只添加 `clone/setns/unshare/chroot`，不使用 `privileged`、`SYS_ADMIN` 或 `--no-sandbox`。宿主机需要允许非特权用户命名空间；如果宿主机的 AppArmor/SELinux 额外禁止它，应根据主机审计日志处理该限制，不要直接关闭 sandbox。入口的有限权限仅用于目录初始化；适配器进程的有效 capabilities 为 0。
 
 ## 4. 开启原有 Prism 开关并用真实账号测试
 

@@ -66,6 +66,6 @@ are retained; additional container fixtures live in `tests/`.
 
 `chromium-seccomp.json` derives from Moby v27.5.1
 `profiles/seccomp/default.json`, under Apache-2.0 (`COPYING.SECCOMP`), with a single
-additional allow rule for clone/setns/unshare as recommended by Playwright.
+additional allow rule for clone/setns/unshare/chroot as recommended by Playwright.
 The Chromium user-namespace and seccomp sandboxes are verified in both native
 architecture jobs; the profile does not grant host capabilities.

@@ -126,8 +126,9 @@ not a reservation or a browser concurrency/memory limit. Existing runtime
 defaults remain unchanged.
 
 The seccomp profile derives from Moby v27.5.1's default profile, adding only
-`clone`, `setns` and `unshare` permissions needed by Playwright's user-namespace
-sandbox. It retains the default syscall deny behavior, including clone3 fallback.
+`clone`, `setns`, `unshare` and `chroot` permissions needed by Playwright's user-namespace
+sandbox. `chroot` is allowed as a syscall for the nested namespace; the container
+does not receive CAP_SYS_CHROOT. It retains the default syscall deny behavior, including clone3 fallback.
 See `COPYING.SECCOMP`. No privileged mode, SYS_ADMIN, or sandbox disabling is used.
 The application runs with zero effective Linux capabilities and
 `no-new-privileges`. Only mount initialization uses CHOWN/DAC_OVERRIDE/SETUID/SETGID.

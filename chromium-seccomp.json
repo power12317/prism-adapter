@@ -59,10 +59,11 @@
       "names": [
         "clone",
         "setns",
-        "unshare"
+        "unshare",
+        "chroot"
       ],
       "action": "SCMP_ACT_ALLOW",
-      "comment": "Chromium sandbox: create nested user, PID and network namespaces (Playwright recommendation)."
+      "comment": "Chromium user-namespace sandbox; chroot is needed inside the nested namespace when host CAP_SYS_CHROOT is dropped."
     },
     {
       "names": [
