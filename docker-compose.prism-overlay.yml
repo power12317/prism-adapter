@@ -1,0 +1,19 @@
+# Merge with an existing Compose project containing the cli-proxy-api service.
+services:
+  prism-adapter:
+    image: ${PRISM_ADAPTER_IMAGE:-ghcr.io/power12317/prism-adapter:v2026.10.10-1}
+    network_mode: "service:cli-proxy-api"
+    init: true
+    depends_on:
+      cli-proxy-api:
+        condition: service_started
+        restart: true
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./chromium-seccomp.json
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
+    shm_size: 1gb
+    volumes:
+      - ./prism-data:/var/lib/cliproxy-prism
+    restart: unless-stopped

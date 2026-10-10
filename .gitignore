@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.ci-run/
+prism-data/
+auths/
+logs/
+plugins/
+config.yaml
+.env

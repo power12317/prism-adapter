@@ -1,0 +1,32 @@
+{
+  "repository": "https://github.com/power12317/CLIProxyAPI",
+  "commit": "cebd2296f711975734950914cf210e8512527d9e",
+  "tag": "v2026.10.10-3",
+  "sha256": {
+    ".gitignore": "599e8d09a18b6bac6f70ed12bf96f67e49c4d992ee2601bc173d92fbcb64b11d",
+    "COPYING": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "COPYING.LESSER": "a5681bf9b05db14d86776930017c647ad9e6e56ff6bbcfdf21e5848288dfaf1b",
+    "README.md": "84c8df5e6cde798beb67bc072b546047de7b76c532f22b0c552696ec2a90f3da",
+    "UPSTREAM.md": "83f61a78c51a741febc40d7754386bd65c94d2284c08a29eeae051e931dac049",
+    "browser_gate.py": "4044bfd3f45cf648427a0e52dd293d21256bdcfb9e8577ece1eeb53e3ae4cdb9",
+    "model_selection.py": "c22da6b5b69f4ffc45b6bb24ba5714e31cde590f0d338f238d293c724a15c0f8",
+    "multiplex_browser.py": "c0cee79826b5c32fafdfbfece37511a2e7cfb5c135635ed0e6a89301338f1a48",
+    "multiplex_runtime.py": "97b6591f7ef399592624cacfd3ff2a2dbaa548ac136572c2ed8623afc098a0aa",
+    "requirements.txt": "a72251b8b8377da90cbf56162b01fe7943157fb2f0c2d7d9b41b4e96e038c584",
+    "response_events.py": "8669503704953e566ec00600aac3a5857f5737ac90c6b02a8c32f2d6b0107f16",
+    "server.py": "063d4bab78e9c6cc3dae0e386af9ca1e12784c0de6205f52dd390b18fe60c282",
+    "smoke_browser.py": "dabab6faf55c844a243edcd10fdcaa5ba1b684f00b95f3d414dd38df4fabe90d",
+    "smoke_client_tools.py": "90d2a881bceca52a465c1f1790c91b3910df0705fef59a229944cf8dd50e056b",
+    "smoke_model_fixture.py": "c8d5755bbdc885f683b6fdd5ef974388ec9c849042a990df15eb56ffa57b41fa",
+    "smoke_multiplex.py": "14037bb5b3a97a6d63135458b8f8e6f0036d1ca893354f2af16e00d31c9e94ee",
+    "test_model_selection.py": "a0ff879b47beb06dbf676db5b8e67769f61b45ad4894efdfabd67cd3a081b387",
+    "test_multiplex.py": "204e57270888fd5bb8652876c0726bada67bf7bc96d99dd847114bbc4fa17e49",
+    "test_server.py": "82aa588d33fd716a0c9eb847cee9e9cf6a80e39f18894fe9f082c78b90efc637",
+    "test_session_cache.py": "f24bef37f746e3f5acbd43df9928d24ba8ad2b737ea64946ccdd306dcfd4c59a",
+    "test_tool_bridge.py": "668d339542a4b3590b2fe240a3eec8af439c3b122b837db8d94b6df39425e21d",
+    "tool_bridge.py": "5f5782d6b18ae56f843f05c838b9f004b8b2a1c3eae4565bc6969128bbaa5406",
+    "tool_state.py": "edc999bd6ddfb86552f7c90ca58211d5050a5e4f1356ba72b26d63589ba3e50a",
+    "tool_validation.py": "236036878d79bca8c91547d87141b004705d2357d0dffbb0e060d103626151df",
+    "upstream-manifest.json": "e53814026e17cfbe66041d7319460916c4251601ea8fe3f52db9c564ac141d91"
+  }
+}

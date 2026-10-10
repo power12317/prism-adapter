@@ -1,0 +1,172 @@
+name: Linux containers and release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: containers-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/power12317/prism-adapter
+
+jobs:
+  container:
+    name: Test Linux ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build native image with pinned application and browser dependencies
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/${{ matrix.arch }}
+          tags: ${{ env.IMAGE }}:build-${{ github.sha }}-${{ matrix.arch }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ github.event.head_commit.timestamp }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+      - name: Pull the released CPA image
+        run: docker pull ghcr.io/power12317/cliproxyapi:v2026.10.10-3
+      - name: Test the final Linux image and production Compose configuration
+        run: |
+          set -o pipefail
+          bash tests/acceptance.sh "$IMAGE:build-${{ github.sha }}-${{ matrix.arch }}" 2>&1 | tee acceptance-${{ matrix.arch }}.log
+      - name: Preserve container verification output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-${{ matrix.arch }}
+          path: acceptance-${{ matrix.arch }}.log
+      - name: Authenticate publication
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the exact tested image
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          docker push "$IMAGE:build-${{ github.sha }}-${{ matrix.arch }}"
+          docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:build-${{ github.sha }}-${{ matrix.arch }}" > digest-${{ matrix.arch }}.txt
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digest-${{ matrix.arch }}.txt
+
+  publish:
+    name: Publish tested multi-architecture release
+    needs: container
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge tested architecture digests into version and latest
+        id: manifest
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          docker buildx imagetools create -t "$IMAGE:$VERSION" -t "$IMAGE:latest" \
+            "$(cat digests/digest-amd64.txt)" "$(cat digests/digest-arm64.txt)"
+          docker buildx imagetools inspect "$IMAGE:$VERSION" --raw > manifest.json
+          python3 - <<'PY'
+          import json
+          m=json.load(open('manifest.json'))
+          assert {(d['platform']['os'],d['platform']['architecture']) for d in m['manifests']} == {('linux','amd64'),('linux','arm64')}
+          PY
+          DIGEST="sha256:$(sha256sum manifest.json | cut -d ' ' -f1)"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$IMAGE:$VERSION" "$IMAGE@$DIGEST" > IMAGE.txt
+          cat IMAGE.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Bundle deployable release assets
+        env:
+          VERSION: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir release
+          cp docker-compose.prism.yml docker-compose.prism-overlay.yml chromium-seccomp.json \
+            COPYING.SECCOMP README_CN.md IMAGE.txt manifest.json release/
+          sed -i "s/prism-adapter:v2026.10.10-1/prism-adapter:$VERSION/g" release/docker-compose*.yml
+          cp digests/*.txt release/
+          tar -czf "prism-adapter-deploy-$VERSION.tar.gz" -C release .
+          sha256sum "prism-adapter-deploy-$VERSION.tar.gz" release/* > SHA256SUMS
+          cat > release-notes.md <<EOF
+          Prebuilt Linux amd64 and arm64 images with Python 3.12, Playwright 1.63.0 and matching Chromium.
+
+          Both native images passed regression tests, actual sandbox checks, mock-upstream text/tool HTTP and CPA Compose shared-network acceptance before publication. Real-account Prism access still requires server-side acceptance.
+
+          \`$IMAGE:$VERSION\`
+          \`$IMAGE@${{ steps.manifest.outputs.digest }}\`
+
+          Download the deployment archive for both Compose variants and the required seccomp profile. Existing CPA deployments should use the overlay, keeping their current Compose project.
+
+          [Build and Linux verification](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          gh release create "$VERSION" --verify-tag --title "Prism Adapter $VERSION" --notes-file release-notes.md \
+            "prism-adapter-deploy-$VERSION.tar.gz" SHA256SUMS release/*
+
+  anonymous-pull:
+    name: Verify anonymous pull on ${{ matrix.arch }}
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Pull all layers anonymously by immutable release digest
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          export DOCKER_CONFIG=$(mktemp -d)
+          # A new GHCR package needs its owner to set visibility to public once.
+          for attempt in $(seq 1 20); do
+            if docker pull "$IMAGE@$DIGEST"; then exit 0; fi
+            echo 'Anonymous pull failed; verify GHCR package visibility is public.'
+            sleep 30
+          done
+          exit 1

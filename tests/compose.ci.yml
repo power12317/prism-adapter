@@ -1,0 +1,6 @@
+services:
+  cli-proxy-api:
+    ports: !reset []
+  prism-adapter:
+    volumes: !override
+      - ${CI_STATE_DIR}:/var/lib/cliproxy-prism

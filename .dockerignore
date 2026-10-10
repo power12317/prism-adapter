@@ -1,0 +1,11 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+.ci-run
+prism-data
+auths
+logs
+config.yaml
+*.env

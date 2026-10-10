@@ -1,0 +1,3 @@
+services:
+  prism-adapter:
+    command: [python, tests/container_fixture.py]
