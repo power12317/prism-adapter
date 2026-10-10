@@ -169,7 +169,7 @@ class ToolBridge:
             if kind not in ('function', 'custom'):
                 self.reject('unsupported_tool', 'Only client function and custom tools are supported')
             desc = definition.get('description', '')
-            if not isinstance(desc, str) or len(desc) > MAX_TOOL_CHARS:
+            if not isinstance(desc, str):
                 self.reject('invalid_tools', 'Tool description is invalid')
             if definition.get('defer_loading') or definition.get('allowed_callers') not in (None, ['direct']):
                 self.reject('unsupported_tool', 'Deferred and hosted tool execution are not supported')

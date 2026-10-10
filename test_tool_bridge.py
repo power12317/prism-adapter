@@ -37,6 +37,34 @@ def call_output(bridge, name='lookup', value=None):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_long_tool_descriptions_are_preserved_in_all_catalog_locations(self):
+        description = 'x' * 48753 + 'Z'
+        for definition in (dict(FUNCTION, description=description), dict(CUSTOM, description=description)):
+            for location in ('tools', 'additional_tools', 'input'):
+                with self.subTest(kind=definition['type'], location=location):
+                    namespace = {'type':'namespace', 'name':'client', 'tools':[definition]}
+                    payload = request(tools=[])
+                    if location == 'input':
+                        payload['input'].insert(0, {'type':'additional_tools', 'tools':[namespace]})
+                    else:
+                        payload[location] = [namespace]
+                    bridge = ToolBridge(payload, adapter)
+                    self.assertEqual(bridge.tools['client.' + definition['name']]['catalog']['description'], description)
+                    self.assertIn(description, bridge.prompt)
+
+    def test_tool_description_type_and_other_size_limits_are_preserved(self):
+        for description in (None, 42, [], {}):
+            with self.subTest(description=description), self.assertRaises(adapter.AdapterError) as raised:
+                ToolBridge(request(tools=[dict(CUSTOM, description=description)]), adapter)
+            self.assertEqual(raised.exception.code, 'invalid_tools')
+        with self.assertRaises(adapter.AdapterError) as total:
+            ToolBridge(request(tools=[dict(CUSTOM, description='x' * 128000)]), adapter)
+        self.assertEqual(total.exception.code, 'tool_request_too_large')
+        bridge = ToolBridge(request(tools=[dict(CUSTOM, description='x' * 48754)]), adapter)
+        with self.assertRaises(adapter.AdapterError) as arguments:
+            bridge.value({'input':'x' * 32001}, bridge.tools['echo'])
+        self.assertEqual(arguments.exception.code, 'tool_call_too_large')
+
     def test_namespace_and_structural_additional_tools(self):
         payload = request(tools=[], input=[{'type':'additional_tools','tools':[
             {'type':'namespace','name':'client','tools':[FUNCTION,CUSTOM]}]}, {'role':'user','content':'lookup'}])
@@ -201,12 +229,14 @@ class ToolStateTests(unittest.TestCase):
 
 class ToolHTTPTests(unittest.TestCase):
     def test_function_and_custom_roundtrip_over_real_http_sse(self):
+        description = 'x' * 48753 + 'Z'
         class Browser:
             count = 0
             def run(inner, account, token, prompt, session, model, effort, reuse_project=True):
                 import re
                 self.assertFalse(reuse_project)
                 self.assertEqual(session,'a'*64)
+                self.assertIn(description, prompt)
                 inner.count += 1
                 marker = re.search(r'PRISM_CLIENT_TOOLS_V1:[a-f0-9]+',prompt).group()
                 if inner.count == 1:
@@ -225,7 +255,8 @@ class ToolHTTPTests(unittest.TestCase):
             server=ThreadingHTTPServer(('127.0.0.1',0),handler)
             threading.Thread(target=server.serve_forever,daemon=True).start()
             try:
-                payload=request(stream=True, include=['reasoning.encrypted_content'], reasoning={'effort':'medium','summary':'detailed'})
+                payload=request(tools=[FUNCTION,dict(CUSTOM,description=description)], stream=True,
+                    include=['reasoning.encrypted_content'], reasoning={'effort':'medium','summary':'detailed'})
                 headers={'X-Prism-Account-ID':'300',
                     'X-Prism-OAuth-Token':'synthetic','X-Prism-Session-ID':'a'*64,'X-Prism-Caller-ID':'b'*64,'Content-Type':'application/json'}
                 def send(headers_=headers):

@@ -36,7 +36,8 @@ for stream in (False, True):
 payload.update(stream=True, tools=[{'type': 'namespace', 'name': 'client', 'tools': [
     {'type': 'function', 'name': 'lookup', 'parameters': {'type': 'object',
      'properties': {'key': {'type': 'string'}}, 'required': ['key'], 'additionalProperties': False}},
-    {'type': 'custom', 'name': 'echo', 'format': {'type': 'grammar', 'syntax': 'regex',
+    {'type': 'custom', 'name': 'echo', 'description': 'x' * 48753 + 'Z',
+     'format': {'type': 'grammar', 'syntax': 'regex',
      'definition': 'fixture-value'}}]}])
 payload['input'] = [{'role': 'user', 'content': 'Look up the fixture value, echo it, and report it.'}]
 for turn, expected in enumerate(('function_call', 'custom_tool_call', 'message')):
@@ -52,4 +53,5 @@ for turn, expected in enumerate(('function_call', 'custom_tool_call', 'message')
         assert item['content'][0]['text'] == 'fixture-confirmed'
 print(json.dumps({'container_http': 'passed', 'model': 'gpt-6.1-sol', 'effort': 'xhigh',
                   'json': True, 'sse': True, 'tools': 'function -> custom -> final',
+                  'long_tool_description_chars': 48754,
                   'bridge_authorization': False, 'real_upstream': False}))
