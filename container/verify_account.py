@@ -8,7 +8,7 @@ from urllib.request import Request, ProxyHandler, build_opener
 key = os.environ.get('CPA_API_KEY') or getpass.getpass('CPA API key: ')
 url = os.environ.get('CPA_URL', 'http://127.0.0.1:8317/v1/responses')
 headers = {'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json',
-           'Session_id': str(uuid.uuid4())}
+           'Session-Id': str(uuid.uuid4())}
 payload = {'model': 'gpt-6.1-sol', 'reasoning': {'effort': 'xhigh'}, 'stream': True,
            'tools': [{'type': 'function', 'name': 'lookup',
                       'description': 'Return the fixture value. Call this first.',
