@@ -9,3 +9,5 @@ auths
 logs
 config.yaml
 *.env
+
+.DS_Store
