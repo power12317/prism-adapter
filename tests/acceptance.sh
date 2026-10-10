@@ -35,7 +35,11 @@ docker run "${flags[@]}" "$PRISM_ADAPTER_IMAGE" sh -ec '
 "${dc[@]}" up -d --wait --wait-timeout 120 --pull never
 adapter=$("${dc[@]}" ps -q prism-adapter)
 cpa=$("${dc[@]}" ps -q cli-proxy-api)
-docker exec "$cpa" wget -qO- http://127.0.0.1:8319/health
+cpa_http() { docker exec -i "$cpa" bash -s -- "$@" < tests/cpa_http.sh; }
+check_cpa_health() {
+  cpa_http /health | python3 -c 'import json,sys; raw=sys.stdin.buffer.read(); assert raw.startswith(b"HTTP/1.1 200"); assert json.loads(raw.split(b"\r\n\r\n",1)[1])["status"]=="ok"; print("CPA loopback /health: passed")'
+}
+check_cpa_health
 docker inspect "$adapter" | python3 -c 'import json,sys; d=json.load(sys.stdin)[0]; assert d["State"]["Health"]["Status"]=="healthy"; assert d["HostConfig"]["NetworkMode"].startswith("container:"); assert not d["HostConfig"]["PortBindings"]'
 "${dc[@]}" exec -T --user 10001:10001 prism-adapter python - <<'PY'
 import os
@@ -65,10 +69,8 @@ PY
 "${dc[@]}" exec -T --user 10001:10001 prism-adapter python -c 'from pathlib import Path; assert Path("/var/lib/cliproxy-prism/persistence-marker").read_text()=="restart-survives"'
 "${dc[@]}" -f tests/compose.fixture.yml up -d --wait --wait-timeout 120 --pull never
 # An actual request from inside the published CPA container, without bridge auth.
-docker exec "$cpa" wget -qO- --header='Content-Type: application/json' \
-  --header='X-Prism-OAuth-Token: synthetic-token' --header='X-Prism-Account-ID: 300' \
-  --post-data='{"model":"gpt-6.1-sol","reasoning":{"effort":"xhigh"},"input":[{"role":"user","content":"cpa-loopback-fixture"}]}' \
-  http://127.0.0.1:8319/v1/responses | python3 -c 'import json,sys; d=json.load(sys.stdin); assert "cpa-loopback-fixture" in d["output"][0]["content"][0]["text"]; print("CPA loopback HTTP without bridge Authorization: passed")'
+cpa_http /v1/responses '{"model":"gpt-6.1-sol","reasoning":{"effort":"xhigh"},"input":[{"role":"user","content":"cpa-loopback-fixture"}]}' \
+  | python3 -c 'import json,sys; raw=sys.stdin.buffer.read(); assert raw.startswith(b"HTTP/1.1 200"), raw; d=json.loads(raw.split(b"\r\n\r\n",1)[1]); assert "cpa-loopback-fixture" in d["output"][0]["content"][0]["text"]; print("CPA loopback HTTP without bridge Authorization: passed")'
 docker run --rm --init --network "container:$cpa" "$PRISM_ADAPTER_IMAGE" python tests/container_client.py
 "${dc[@]}" exec -T --user 10001:10001 prism-adapter python - <<'PY'
 import json
@@ -88,5 +90,5 @@ old_cpa=$cpa
 "${dc[@]}" -f tests/compose.fixture.yml up -d --force-recreate --wait --wait-timeout 120 --pull never
 cpa=$("${dc[@]}" ps -q cli-proxy-api)
 test "$cpa" != "$old_cpa"
-docker exec "$cpa" wget -qO- http://127.0.0.1:8319/health
+check_cpa_health
 echo 'Linux image + sandbox + Compose acceptance passed (local mock upstream only).'

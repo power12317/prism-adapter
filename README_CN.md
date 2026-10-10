@@ -2,7 +2,7 @@
 
 镜像：`ghcr.io/power12317/prism-adapter:v2026.10.10-1`（同时发布 `latest`），支持 Linux amd64 / arm64。CPA 配套版本为 `ghcr.io/power12317/cliproxyapi:v2026.10.10-3`。本镜像包含适配器、Python 3.12、固定版本的 Playwright 1.63.0 及匹配的 Chromium；服务器不需要安装 Python、编译源码或运行 `docker build`。
 
-[发布与部署附件](https://github.com/power12317/prism-adapter/releases/tag/v2026.10.10-1) · [构建与验收记录](https://github.com/power12317/prism-adapter/actions) · [来源与 LGPL 许可证](UPSTREAM.md)
+[发布与部署附件](https://github.com/power12317/prism-adapter/releases/tag/v2026.10.10-1) · [构建与验收记录](https://github.com/power12317/prism-adapter/actions) · [来源与 LGPL 许可证](https://github.com/power12317/prism-adapter/blob/main/UPSTREAM.md)
 
 每个 Release 的 `IMAGE.txt` 给出确切版本和不可变 manifest digest，`manifest.json`、`digest-amd64.txt`、`digest-arm64.txt` 给出架构信息。先检查对应 Actions 全部成功；`anonymous-pull` 验证的是无登录状态下实际下载完整镜像。
 
@@ -63,7 +63,7 @@ docker compose -f docker-compose.prism.yml up -d --wait
 
 ```sh
 docker compose -f docker-compose.prism.yml ps
-docker compose -f docker-compose.prism.yml exec -T cli-proxy-api wget -qO- http://127.0.0.1:8319/health
+docker compose -f docker-compose.prism.yml exec -T prism-adapter python container/healthcheck.py --verbose
 docker compose -f docker-compose.prism.yml logs --tail=100 prism-adapter
 ```
 
