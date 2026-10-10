@@ -10,6 +10,7 @@ with sync_playwright() as p:
         page.goto('chrome://sandbox')
         text = page.locator('body').inner_text()
         print(text)
-        for name in ('Namespace sandbox', 'Seccomp-BPF sandbox'):
-            assert any(name.lower() in line.lower() and 'yes' in line.lower()
-                       for line in text.splitlines()), (name, text)
+        assert 'Layer 1 Sandbox\tNamespace' in text, text
+        for name in ('PID namespaces', 'Network namespaces', 'Seccomp-BPF sandbox'):
+            assert f'{name}\tYes' in text, (name, text)
+        assert 'You are adequately sandboxed.' in text
