@@ -814,7 +814,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise AdapterError(429, "prism_busy", "Prism browser is busy; request was not submitted")
             try:
                 if bridge is not None:
-                    self.tool_state.reserve(scope, bridge.calls, bridge.results, bridge.lease, bridge.needs_fresh)
+                    self.tool_state.reserve(scope, bridge.calls, bridge.results, bridge.lease)
                 try:
                     relay_session = session_id
                     caller = self.headers.get('X-Prism-Caller-ID', '')

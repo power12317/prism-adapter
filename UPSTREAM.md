@@ -80,6 +80,11 @@ or new product/deployment setting is imported. The existing HTTP request-body
 limit still bounds an individual client request. Chromium loopback coverage in
 `smoke_relay.py` exercises both modes and is included in container acceptance.
 
+The upstream `needs_fresh`/single-consumption continuation gate is removed.
+Completed tool results are reusable conversation history, including when the
+client repeats a completed continuation. Existing consumed SQLite records need
+no migration. Pending-result leases and call/result correlation are retained.
+
 Upstream source hashes are recorded in `upstream-manifest.json`. The original
 hashes describe the initial imported files; selective update commits are recorded
 separately, before the local changes and regressions listed above.

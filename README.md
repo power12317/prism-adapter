@@ -62,6 +62,9 @@ reuse. Changed history starts a fresh chat. A confirmed expired continuation or
 size refusal can fall back to a full, segmented replay before any new part succeeds.
 Descriptions, instructions and old history are never shortened or summarized.
 Both browser modes support the relay; CPA needs no additional setting or update.
+Completed tool results may appear again in full client history, including a
+repeated continuation request. They are not rejected for having been consumed
+by an earlier model turn. Unresolved results still retain their pending state.
 
 Prism returns completed responses rather than token deltas. SSE includes completed
 text/tool items and a final response. Usage remains null; CPA publishes

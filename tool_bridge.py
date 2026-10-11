@@ -234,7 +234,6 @@ class ToolBridge:
         if not isinstance(items, list) or not items:
             self.reject('invalid_input', 'Tool request requires input')
         translated = []
-        last_kind = None
         for item in items:
             if not isinstance(item, dict):
                 self.reject('invalid_input', 'Responses input items must be objects')
@@ -252,7 +251,6 @@ class ToolBridge:
                 continue
             if kind == 'message':
                 translated.append(item)
-                last_kind = 'user' if item.get('role','user') in ('user','developer','system') else 'assistant'
             elif kind in ('function_call','custom_tool_call'):
                 tool = self.lookup(item.get('namespace',''), item.get('name'))
                 expected = 'function_call' if tool['kind']=='function' else 'custom_tool_call'
@@ -266,7 +264,6 @@ class ToolBridge:
                 call[field] = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',',':')) if field=='arguments' else value
                 self.calls[call_id] = call
                 translated.append({'role':'assistant','content':'CLIENT_TOOL_CALL '+json.dumps(call,ensure_ascii=False)})
-                last_kind = kind
             elif kind in ('function_call_output','custom_tool_call_output'):
                 call_id = item.get('call_id')
                 call = self.calls.get(call_id) if isinstance(call_id,str) else None
@@ -280,12 +277,10 @@ class ToolBridge:
                     self.reject('invalid_tool_result', 'Tool result must be text or text parts')
                 self.results[call_id] = {'type':kind,'call_id':call_id,'output':output}
                 translated.append({'role':'user','content':'CLIENT_TOOL_RESULT '+json.dumps(self.results[call_id],ensure_ascii=False)})
-                last_kind = kind
             else:
                 self.reject('unsupported_input', 'Unsupported Responses item in tool history')
         if set(self.calls) != set(self.results) or len(self.calls) > MAX_HISTORY_CALLS:
             self.reject('missing_tool_result', 'Tool history requires exactly one result per call and at most 64 calls')
-        self.needs_fresh = bool(self.results) and last_kind != 'user'
         return translated
 
     def output(self, answer, request_id):

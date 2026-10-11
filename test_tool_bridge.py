@@ -214,7 +214,7 @@ class ToolStateTests(unittest.TestCase):
         return ToolBridge(request(input=history,**change),adapter)
 
     def reserve(self, bridge, scope=None):
-        return self.state.reserve(scope or self.scope,bridge.calls,bridge.results,bridge.lease,bridge.needs_fresh)
+        return self.state.reserve(scope or self.scope,bridge.calls,bridge.results,bridge.lease)
 
     def test_two_rounds_and_old_history_are_correlated(self):
         second = self.continuation()
@@ -229,9 +229,7 @@ class ToolStateTests(unittest.TestCase):
         final,_ = third.output(framed(third,{'kind':'final','text':'confirmed'}),'last')
         self.state.complete(self.scope,third.lease,'last',[])
         self.assertEqual(final[0]['content'][0]['text'],'confirmed')
-        with self.assertRaises(adapter.AdapterError) as raised:
-            self.reserve(ToolBridge(request(input=history),adapter))
-        self.assertEqual(raised.exception.code,'tool_result_replayed')
+        self.assertEqual(self.reserve(ToolBridge(request(input=history),adapter)), [])
         raw = self.state.path.read_bytes()
         self.assertNotIn(b'client-only-value',raw)
         self.assertNotIn(b'confirmed',raw)
@@ -245,7 +243,19 @@ class ToolStateTests(unittest.TestCase):
         changed = copy.deepcopy(second.calls)
         changed[self.calls[0]['call_id']]['arguments']='{"key":"tampered"}'
         with self.assertRaises(adapter.AdapterError):
-            self.state.reserve(self.scope,changed,second.results,second.lease,True)
+            self.state.reserve(self.scope,changed,second.results,second.lease)
+
+    def test_completed_results_in_existing_database_remain_usable_after_restart(self):
+        second = self.continuation()
+        self.reserve(second)
+        self.state.complete(self.scope,second.lease,'completed-before-upgrade',[])
+        self.state = ToolState(self.tmp.name,adapter.AdapterError)
+        self.assertEqual(self.reserve(self.continuation()), [])
+        changed = self.continuation()
+        changed.results[self.calls[0]['call_id']]['output'] = 'different-result'
+        with self.assertRaises(adapter.AdapterError) as raised:
+            self.reserve(changed)
+        self.assertEqual(raised.exception.code, 'tool_result_conflict')
 
     def test_uncertain_result_survives_restart_and_pre_send_can_release(self):
         second = self.continuation()
@@ -331,9 +341,8 @@ class ToolHTTPTests(unittest.TestCase):
                 third=send()
                 self.assertEqual(third['output'][0]['content'][0]['text'],'confirmed-client-value')
                 self.assertIsNone(third['usage'])
-                with self.assertRaises(HTTPError) as duplicate:
-                    send()
-                self.assertEqual(duplicate.exception.code,409)
-                self.assertEqual(browser.count,3)
+                repeated=send()
+                self.assertEqual(repeated['output'][0]['content'][0]['text'],'confirmed-client-value')
+                self.assertEqual(browser.count,4)
             finally:
                 server.shutdown();server.server_close()

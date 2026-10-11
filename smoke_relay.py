@@ -182,6 +182,9 @@ def run_mode(mode, chrome):
                 assert upstream.accepted[-1]['cid']==cid
                 assert 'COMPLETE_TOOL_DESCRIPTION' not in upstream.accepted[-1]['text']
                 assert 'COMPLETE_HISTORY' not in upstream.accepted[-1]['text']
+                # Codex/new-api may submit complete history again after a completed continuation.
+                repeated=send()
+                assert repeated['output'][0]['content'][0]['text']=='client-value received'
                 upstream.expire_next=True
                 payload['input'] += [{'role':'assistant','content':'client-value received'},
                                      {'role':'user','content':'Continue after expiration'}]
@@ -226,7 +229,7 @@ def run_mode(mode, chrome):
                 assert len(upstream.accepted)==before+1
                 assert list(state.pending.iterdir())
                 print(json.dumps({'relay_smoke':mode,'result':'passed','full_tools':True,
-                    'native_snapshot':True,'incremental':True,'caller_isolation':True,
+                    'native_snapshot':True,'incremental':True,'completed_results_reusable':True,'caller_isolation':True,
                     'size_retry_without_prefix_replay':True,'unknown_result_retained':True,'real_upstream':False}),flush=True)
             finally:
                 gateway.shutdown()

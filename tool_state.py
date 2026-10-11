@@ -43,7 +43,7 @@ class ToolState:
         finally:
             db.close()
 
-    def reserve(self, scope, calls, results, lease, needs_fresh):
+    def reserve(self, scope, calls, results, lease):
         fresh = []
         with self.lock, self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -64,8 +64,8 @@ class ToolState:
                     fresh.append(call_id)
                     db.execute("UPDATE calls SET state='reserved', result_hash=?, lease=? WHERE call_id=?",
                                (result_hash, lease, call_id))
-            if needs_fresh and not fresh:
-                raise self.error(409, 'tool_result_replayed', 'These tool results were already consumed; continuation was not replayed')
+            # Completed results remain valid caller-supplied conversation history.
+            # They need no new lease; only unresolved results block another turn.
         return fresh
 
     def complete(self, scope, lease, group, calls):
