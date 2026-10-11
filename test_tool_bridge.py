@@ -52,11 +52,38 @@ class ProtocolTests(unittest.TestCase):
                     self.assertEqual(bridge.tools['client.' + definition['name']]['catalog']['description'], description)
                     self.assertIn(description, bridge.prompt)
 
-    def test_tool_description_type_and_other_size_limits_are_preserved(self):
-        for description in (None, 42, [], {}):
-            with self.subTest(description=description), self.assertRaises(adapter.AdapterError) as raised:
-                ToolBridge(request(tools=[dict(CUSTOM, description=description)]), adapter)
-            self.assertEqual(raised.exception.code, 'invalid_tools')
+    def test_optional_tool_descriptions_preserve_tools_in_all_catalog_locations(self):
+        missing = object()
+        for source in (FUNCTION, CUSTOM):
+            for description in (missing, None, 42, [], {}, False, '  exact description\n'):
+                for location in ('tools', 'namespace', 'additional_tools', 'input'):
+                    with self.subTest(kind=source['type'], description=description, location=location):
+                        definition = dict(source)
+                        if description is missing:
+                            definition.pop('description', None)
+                        else:
+                            definition['description'] = description
+                        payload = request(tools=[])
+                        name = definition['name']
+                        if location == 'tools':
+                            payload['tools'] = [definition]
+                        else:
+                            namespace = {'type':'namespace', 'name':'client', 'tools':[definition]}
+                            name = 'client.' + name
+                            if location == 'input':
+                                payload['input'].insert(0, {'type':'additional_tools', 'tools':[namespace]})
+                            else:
+                                payload['tools' if location == 'namespace' else location] = [namespace]
+                        original = copy.deepcopy(payload)
+                        bridge = ToolBridge(payload, adapter)
+                        self.assertEqual(set(bridge.tools), {name})
+                        catalog = bridge.tools[name]['catalog']
+                        self.assertEqual(catalog['description'], description if isinstance(description, str) else '')
+                        field = 'parameters' if source['type'] == 'function' else 'format'
+                        self.assertEqual(catalog[field], source[field])
+                        self.assertEqual(payload, original)
+
+    def test_other_size_limits_are_preserved(self):
         with self.assertRaises(adapter.AdapterError) as total:
             ToolBridge(request(tools=[dict(CUSTOM, description='x' * 128000)]), adapter)
         self.assertEqual(total.exception.code, 'tool_request_too_large')
@@ -255,7 +282,7 @@ class ToolHTTPTests(unittest.TestCase):
             server=ThreadingHTTPServer(('127.0.0.1',0),handler)
             threading.Thread(target=server.serve_forever,daemon=True).start()
             try:
-                payload=request(tools=[FUNCTION,dict(CUSTOM,description=description)], stream=True,
+                payload=request(tools=[dict(FUNCTION,description=None),dict(CUSTOM,description=description)], stream=True,
                     include=['reasoning.encrypted_content'], reasoning={'effort':'medium','summary':'detailed'})
                 headers={'X-Prism-Account-ID':'300',
                     'X-Prism-OAuth-Token':'synthetic','X-Prism-Session-ID':'a'*64,'X-Prism-Caller-ID':'b'*64,'Content-Type':'application/json'}

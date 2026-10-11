@@ -170,7 +170,7 @@ class ToolBridge:
                 self.reject('unsupported_tool', 'Only client function and custom tools are supported')
             desc = definition.get('description', '')
             if not isinstance(desc, str):
-                self.reject('invalid_tools', 'Tool description is invalid')
+                desc = ''
             if definition.get('defer_loading') or definition.get('allowed_callers') not in (None, ['direct']):
                 self.reject('unsupported_tool', 'Deferred and hosted tool execution are not supported')
             catalog = {'type':kind, 'name':qualified, 'description':desc}

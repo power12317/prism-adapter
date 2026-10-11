@@ -34,8 +34,10 @@ Local changes to the imported modules:
   The digest represents the CPA credential and OAuth account, not its access token.
 - Client tool descriptions are preserved without the upstream 32,000-character
   per-description cap, allowing Codex Code Mode catalogs with desktop tools.
-  Descriptions must still be strings. The aggregate bridge prompt budget and
-  tool-call input limits are unchanged.
+  Missing or non-string descriptions are treated as empty optional text without
+  dropping the tool, its parameters, or its custom format. String descriptions
+  are retained exactly. The aggregate bridge prompt budget and tool-call input
+  limits are unchanged.
 - The client-tool smoke fixture initializes the reconnect fields introduced by
   the upstream multiplex fixture update. This is a fixture-only compatibility fix.
 - Loopback browser smoke clients explicitly disable system proxy discovery;

@@ -34,7 +34,7 @@ for stream in (False, True):
     assert 'container-text-fixture' in result['output'][0]['content'][0]['text']
 
 payload.update(stream=True, tools=[{'type': 'namespace', 'name': 'client', 'tools': [
-    {'type': 'function', 'name': 'lookup', 'parameters': {'type': 'object',
+    {'type': 'function', 'name': 'lookup', 'description': None, 'parameters': {'type': 'object',
      'properties': {'key': {'type': 'string'}}, 'required': ['key'], 'additionalProperties': False}},
     {'type': 'custom', 'name': 'echo', 'description': 'x' * 48753 + 'Z',
      'format': {'type': 'grammar', 'syntax': 'regex',
