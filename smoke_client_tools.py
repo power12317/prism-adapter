@@ -88,13 +88,13 @@ def main():
                 else:
                     assert item['content'][0]['text']=='fixture-confirmed'
             assert len(upstream.jobs)==3 and upstream.mismatches==0
-            assert len({job['project'] for job in upstream.jobs.values()})==3
+            assert len({job['project'] for job in upstream.jobs.values()})==1
             assert not list(state.pending.iterdir())
             receipts=[json.loads(p.read_text()) for p in state.receipts.iterdir()]
             assert len(receipts)==3 and all(r['start_count']==1 for r in receipts)
             assert all(r['model']=='gpt-6.1-sol' and r['reasoning_effort']=='medium' for r in receipts)
             print(json.dumps({'result':'passed','scope':'real HTTP + Chromium + mock Prism',
-                'upstream_starts':3,'fresh_projects':3,'function_calls':1,'custom_calls':1,'final_completed':True,
+                'upstream_starts':3,'fresh_projects':1,'function_calls':1,'custom_calls':1,'final_completed':True,
                 'pending':0,'real_prism_requests':0}))
         finally:
             server.shutdown();server.server_close();worker.close()

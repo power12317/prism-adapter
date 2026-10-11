@@ -30,7 +30,7 @@ RUN python -m pip install --no-cache-dir --only-binary=:all: --require-hashes -r
     && python -c 'from playwright.sync_api import sync_playwright; from pathlib import Path; p=sync_playwright().start(); c=Path(p.chromium.executable_path); assert c.is_file(), c; Path("/opt/chromium/chrome").symlink_to(c); s=c.parent/"chrome_sandbox"; assert s.is_file(), s; Path("/opt/chromium/chrome_sandbox").symlink_to(s); p.stop()' \
     && chmod -R go-w /ms-playwright
 
-COPY *.py COPYING COPYING.LESSER UPSTREAM.md *manifest.json ./
+COPY *.py COPYING COPYING.LESSER COPYING.PRISM-BRIDGE UPSTREAM.md *manifest.json ./
 COPY tests/ ./tests/
 COPY container/ ./container/
 RUN chmod 755 container/entrypoint.sh

@@ -35,15 +35,18 @@ restart. OAuth login uses the existing flow.
 
 Supported reasoning levels are low, medium, high, and xhigh (medium when omitted),
 subject to the options actually available on the Prism account. Model/effort
-selection is refreshed on every request. Other models and native WebSocket,
+selection is refreshed when opening a chat and preserved on continued turns. Other models and native WebSocket,
 compact, image, background, and structured-output protocols are not implemented
 by the upstream Prism adapter. WebSocket selection excludes accounts whose mapped
 model uses Prism; other accounts remain available for WebSocket requests.
 
 Requests may use `reasoning.summary=detailed`; Prism does not manufacture a
-reasoning summary. Parsed text/history, including role labels and instructions,
-uses the upstream UTF-8 byte budget of 86,000 bytes (`PRISM_MAX_PROMPT_BYTES`).
-The client-tool catalog and framing retain their separate upstream size limit.
+reasoning summary. Complete prompts, including tools, instructions and history,
+are split losslessly using an 86,000-byte JSON-escaped UTF-8 transport budget
+(`PRISM_MAX_PROMPT_BYTES`, the existing setting). Earlier parts only acknowledge
+receipt; the final part produces the client response. All parts retain the
+requested model and effort. An explicit upstream size refusal halves the segment
+budget once and recuts only the undelivered suffix. Unknown outcomes are not replayed.
 CPA applies ordinary payload rules once after built-in model, reasoning and stream
 preparation, preserving configured overrides and removals through dispatch.
 
@@ -52,10 +55,13 @@ text requests, with function/custom tools, nested namespaces, additional_tools,
 tool_choice, and parallel_tool_calls. It preserves the requested model and effort;
 the upstream restriction to gpt-6.1-sol has been removed. Tools execute at the
 client. Subsequent requests carry the complete call/result history and original
-tool catalog. Each tool turn uses a
-fresh project, while caller/account/conversation identity and call consumption
-are preserved. CPA forwards tools without a separate tool setting. This model
-compatibility change requires only an adapter update.
+tool catalog. Matching history prefixes continue the native Prism conversation
+with only new entries, using its response ID and listen snapshot. Account,
+caller, client session, model, effort and instruction/catalog identity scope this
+reuse. Changed history starts a fresh chat. A confirmed expired continuation or
+size refusal can fall back to a full, segmented replay before any new part succeeds.
+Descriptions, instructions and old history are never shortened or summarized.
+Both browser modes support the relay; CPA needs no additional setting or update.
 
 Prism returns completed responses rather than token deltas. SSE includes completed
 text/tool items and a final response. Usage remains null; CPA publishes

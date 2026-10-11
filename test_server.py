@@ -116,27 +116,19 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaises(adapter.AdapterError):
                 adapter.parse_prompt(request)
 
-    def test_utf8_prompt_budget_includes_roles_instructions_and_history(self):
-        for text in ('a' * 32, '中文' * 16, '😀' * 16):
-            with self.subTest(text=text):
-                payload = {'model': adapter.MODEL, 'instructions': 'rules', 'input': [
-                    {'role': 'user', 'content': text}, {'role': 'assistant', 'content': 'answer'}]}
-                expected = '[instructions]\nrules\n\n[user]\n' + text + '\n\n[assistant]\nanswer'
-                size = len(expected.encode('utf-8'))
-                with mock.patch.object(adapter, 'MAX_PROMPT_BYTES', size):
-                    self.assertEqual(adapter.parse_prompt(payload), (expected, False))
-                with mock.patch.object(adapter, 'MAX_PROMPT_BYTES', size - 1):
-                    with self.assertRaises(adapter.AdapterError) as raised:
-                        adapter.parse_prompt(payload)
-                    self.assertEqual(raised.exception.code, 'invalid_request')
-
-    def test_default_byte_budget_accepts_long_ascii_but_counts_chinese_bytes(self):
-        with mock.patch.object(adapter, 'MAX_PROMPT_BYTES', 86000):
-            text = 'a' * (86000 - len('[user]\n'))
-            self.assertEqual(len(adapter.parse_prompt({'model': adapter.MODEL, 'input': text})[0]), 86000)
-            for text in (text + 'a', '中' * 30000):
-                with self.assertRaises(adapter.AdapterError):
-                    adapter.parse_prompt({'model': adapter.MODEL, 'input': text})
+    def test_large_text_reaches_the_lossless_relay_instead_of_local_rejection(self):
+        from relay_transport import RelayPlan, transport_size
+        for text in ('a' * 86001, '中文' * 16000, '😀' * 24000):
+            with self.subTest(chars=len(text)):
+                prompt, _ = adapter.parse_prompt({'model': adapter.MODEL, 'instructions': 'rules',
+                    'input': [{'role': 'user', 'content': text}, {'role': 'assistant', 'content': 'answer'}]})
+                self.assertEqual(prompt, '[instructions]\nrules\n\n[user]\n' + text + '\n\n[assistant]\nanswer')
+                plan = RelayPlan(prompt, adapter.MODEL, 'medium', 86000)
+                self.assertGreater(len(plan.pieces), 1)
+                self.assertEqual(''.join(plan.pieces), prompt)
+                for i in range(len(plan.pieces)):
+                    plan.done = i
+                    self.assertLessEqual(transport_size(plan.text), 86000)
 
     def test_terminal_output_and_unknown_state(self):
         self.assertIsNone(adapter.terminal_text({"status": "running"}))
@@ -224,7 +216,7 @@ class AdapterTests(unittest.TestCase):
                             self.assertIn('upstream_operation=start', error['message'])
                             self.assertIn('upstream_status=413', error['message'])
                             self.assertNotIn('secret', json.dumps(error))
-                            self.assertEqual(fake.options, ('gpt-6-luna', 'xhigh', False))
+                            self.assertEqual(fake.options, ('gpt-6-luna', 'xhigh', True))
             finally:
                 server.shutdown()
                 server.server_close()
@@ -366,7 +358,7 @@ class FakeControl:
     def inner_text(self):
         return "5.6 Sol\nMedium"
 
-    def fill(self, _text):
+    def evaluate(self, _script, _text):
         pass
 
     def press(self, key):
@@ -467,17 +459,17 @@ class BrowserTurnTests(unittest.TestCase):
                         page.server_response(adapter.START, {'request_id': 'fixture-request'})
                         page.browser_request(adapter.STATUS, {'request_id': 'fixture-request'})
                     page.server_response(path, {'request_id': 'fixture-request', 'status': 'failed',
-                        'response': {'status': 'error', 'payload': {'reason': 'conversation_too_large',
+                        'response': {'status': 'error', 'payload': {'reason': 'project_edit_access_required',
                             'diagnostics': {'operation': 'start', 'httpStatus': 413}}}})
 
                 state = adapter.State(directory)
                 with self.assertRaises(adapter.AdapterError) as raised:
                     run_turn(state, submit)
-                self.assertEqual((raised.exception.status, raised.exception.code), (422, 'conversation_too_large'))
+                self.assertEqual((raised.exception.status, raised.exception.code), (403, 'project_edit_access_required'))
                 self.assertIn('upstream_status=413', str(raised.exception))
                 self.assertFalse((state.pending / '300').exists())
                 receipt = json.loads(next(state.receipts.iterdir()).read_text())
-                self.assertEqual(receipt['error_code'], 'conversation_too_large')
+                self.assertEqual(receipt['error_code'], 'project_edit_access_required')
 
     def test_turn_that_never_left_the_browser_releases_the_account(self):
         # Enter was pressed but the page sent no start, e.g. the editor or

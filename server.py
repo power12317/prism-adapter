@@ -27,6 +27,7 @@ from model_selection import MODELS, EFFORTS, select_options
 from tool_bridge import ToolBridge, has_tools, strict_json
 from tool_state import ToolState, digest
 from response_events import completed_events
+from relay_transport import Cursor, FETCH_JSON, PART_GAP_SECONDS, SET_EDITOR_TEXT, RelayPlan, RelayPrompt, response_snapshot
 
 
 BASE = "https://prism.openai.com"
@@ -80,7 +81,7 @@ def parse_prompt(payload):
     if instructions:
         if not isinstance(instructions, str):
             raise AdapterError(400, "invalid_request", "instructions must be text")
-        parts.append("[instructions]\n" + instructions)
+    prefix = "[instructions]\n" + instructions + "\n\n" if instructions else ''
     for item in items:
         if not isinstance(item, dict) or item.get("type", "message") != "message":
             raise AdapterError(422, "unsupported_input", "Prism adapter accepts text messages only")
@@ -97,9 +98,7 @@ def parse_prompt(payload):
         if not text.strip():
             raise AdapterError(400, "invalid_request", "message content must not be empty")
         parts.append("[" + role + "]\n" + text)
-    prompt = "\n\n".join(parts)
-    if not prompt.strip() or len(prompt.encode('utf-8')) > MAX_PROMPT_BYTES:
-        raise AdapterError(400, "invalid_request", "text input is empty or exceeds the UTF-8 byte budget")
+    prompt = RelayPrompt(prefix, parts)
     return prompt, payload.get("stream", False)
 
 
@@ -109,9 +108,15 @@ def terminal_failure_reason(data):
         return 'unknown'
     response = data.get('response')
     payload = response.get('payload') if isinstance(response, dict) else None
-    reason = payload.get('reason') if isinstance(payload, dict) else None
+    payload = payload if isinstance(payload, dict) else {}
+    error = data.get('error') if isinstance(data.get('error'), dict) else {}
+    nested = payload.get('error') if isinstance(payload.get('error'), dict) else {}
+    reason = (payload.get('reason') or payload.get('code') or nested.get('code')
+              or error.get('code') or data.get('reason') or data.get('code'))
     return reason if reason in ('sandbox_reconnecting', 'conversation_too_large',
-                                'project_edit_access_required') else 'unknown'
+                                'project_edit_access_required', 'conversation_not_found',
+                                'conversation_not_available', 'invalid_previous_response',
+                                'invalid_previous_response_id') else 'unknown'
 
 
 def terminal_failure_diagnostics(data):
@@ -155,6 +160,9 @@ def terminal_failure(data):
         'project_edit_access_required': (403, 'project_edit_access_required', 'Prism project edit access is required'),
         'conversation_too_large': (422, 'conversation_too_large', 'Prism conversation exceeds the upstream limit'),
     }.get(reason, (502, 'prism_failed', 'Prism turn failed'))
+    if reason in ('conversation_not_found', 'conversation_not_available',
+                  'invalid_previous_response', 'invalid_previous_response_id'):
+        status, code, message = 409, 'prism_conversation_unavailable', 'Prism conversation can no longer be continued'
     details = {}
     if data.get('status') in ('completed', 'failed', 'error'):
         details['turn_status'] = data['status']
@@ -168,13 +176,22 @@ def terminal_failure(data):
         message += ' (' + '; '.join(
             key + '=' + (','.join(value) if isinstance(value, list) else str(value))
             for key, value in details.items()) + ')'
-    return AdapterError(status, code, message)
+    error = AdapterError(status, code, message)
+    payload = response.get('payload') if isinstance(response, dict) else None
+    error.replay_safe = (code in ('conversation_too_large', 'prism_conversation_unavailable')
+                         and not (isinstance(payload, dict) and payload.get('output')))
+    return error
 
 
 def terminal_text(data):
     if not isinstance(data, dict):
         return None
     response = data.get("response") or {}
+    if (data.get('status') not in ('running', 'in_progress', 'queued', 'processing', 'started')
+            and terminal_failure_reason(data) != 'unknown'
+            and not (isinstance(response, dict) and isinstance(response.get('payload'), dict)
+                     and response['payload'].get('output'))):
+        return terminal_failure(data)
     if data.get("status") not in ("completed", "failed", "error"):
         return None
     if data.get("status") in ("failed", "error"):
@@ -310,6 +327,7 @@ class BrowserSession:
             self.project = None
             self.created = self.used = time.monotonic()
             self.active = None
+            self.relay = None
             self.page.route("**/api/llm/**", self.route)
             self.page.on("response", self.response)
         except BaseException:
@@ -341,6 +359,12 @@ class BrowserRequest:
         self.deferred_poll = None
         self.terminal = None
         self.began = False
+        self.start_body = None
+        self.last_data = None
+        self.snapshot = None
+        self.cursor = None
+        self.direct = False
+        self.planned_start = None
 
     def route(self, route):
         request = route.request
@@ -360,12 +384,16 @@ class BrowserRequest:
                     route.continue_()
                     return
             elif request.url == BASE + START:
+                if self.direct and body != self.planned_start:
+                    route.abort()
+                    return
                 if self.gate.accept(body):
                     # A cached page must never submit against another project.
                     if (body.get("metadata") or {}).get("projectId") != self.session.project:
                         self.gate.sent = False
                         self.gate.error = "Prism attempted to use another project"
                     else:
+                        self.start_body = body
                         self.accepted.add(request)
                         route.continue_()
                         return
@@ -376,37 +404,74 @@ class BrowserRequest:
     def response(self, response):
         # An old poll may arrive after a cached page starts a new turn. Correlate
         # the actual browser request as well as the upstream request identifier.
-        if response.request not in self.accepted:
+        if self.direct or response.request not in self.accepted:
             return
         try:
             data = response.json()
-            if not isinstance(data, dict):
-                return
-            if self.request_id and data.get("request_id") not in (None, "", self.request_id):
-                self.gate.error = "Prism returned a foreign request identifier"
-                return
-            if response.url == BASE + START and isinstance(data.get("request_id"), str):
-                self.request_id = data["request_id"]
-            if self.request_id:
-                update = {"stage": "polling", "request_id": self.request_id}
-                if isinstance(data.get("turn_state"), (str, dict)) and data["turn_state"]:
-                    update["turn_state"] = data["turn_state"]
-                self.state.update(self.account_id, update)
-            result = terminal_text(data)
-            if result is not None:
-                self.terminal = (response.status, result)
+            self.ingest(data, response.status, response.url == BASE + START)
         except (ValueError, TypeError):
             pass
         if self.request_id and self.deferred_poll is not None:
             route, self.deferred_poll = self.deferred_poll, None
             self.route(route)
 
+    def ingest(self, data, status, from_start=False):
+        if not isinstance(data, dict):
+            return
+        if self.request_id and data.get('request_id') not in (None, '', self.request_id):
+            self.gate.error = 'Prism returned a foreign request identifier'
+            return
+        if from_start and isinstance(data.get('request_id'), str):
+            self.request_id = data['request_id']
+        self.last_data = data
+        self.snapshot = response_snapshot(data, self.snapshot)
+        if self.request_id:
+            update = {'stage':'polling', 'request_id':self.request_id}
+            if isinstance(data.get('turn_state'), (str, dict)) and data['turn_state']:
+                update['turn_state'] = data['turn_state']
+            self.state.update(self.account_id, update)
+        result = terminal_text(data)
+        if result is not None:
+            self.terminal = (status, result)
+
+    def run_direct(self, cursor, prompt, cache_hit):
+        self.direct = True
+        self.planned_start = cursor.body(prompt)
+        self.state.begin(self.account_id, self.session.project)
+        self.began = True
+        self.state.update(self.account_id, {'model':self.gate.model, 'reasoning_effort':self.gate.effort})
+        self.gate.armed = True
+        page = self.session.page
+        result = page.evaluate(FETCH_JSON, {'origin':BASE, 'path':START, 'body':self.planned_start})
+        if not isinstance(result, dict) or not result.get('status'):
+            raise AdapterError(502, 'unknown_outcome', 'Prism relay start outcome is unknown; pending state retained')
+        self.ingest(result.get('data'), result['status'], True)
+        if not self.terminal and result['status'] != 200:
+            raise AdapterError(502, 'prism_failed', 'Prism relay start failed; upstream_status=' + str(result['status']))
+        deadline = time.monotonic() + 240
+        data = result.get('data') or {}
+        turn_state = data.get('turn_state')
+        while not self.terminal and not self.gate.error and time.monotonic() < deadline:
+            if not self.request_id:
+                break
+            body = {'request_id':self.request_id, 'turn_state':turn_state}
+            result = page.evaluate(FETCH_JSON, {'origin':BASE, 'path':STATUS, 'body':body})
+            if not isinstance(result, dict) or result.get('status') != 200:
+                raise AdapterError(502, 'poll_failed', 'Prism relay poll failed; pending state retained')
+            data = result.get('data')
+            self.ingest(data, 200)
+            if isinstance(data, dict) and data.get('turn_state'):
+                turn_state = data['turn_state']
+            if not self.terminal:
+                page.wait_for_timeout(500)
+        return self.finish(cache_hit)
+
     def run(self, prompt, cache_hit):
         page = self.session.page
         textarea = page.locator('textarea[placeholder="Ask anything"]')
         textarea.wait_for(state="visible", timeout=90000)
         select_options(page, self.gate.model, self.gate.effort, AdapterError)
-        textarea.fill(prompt)
+        textarea.evaluate(SET_EDITOR_TEXT, str(prompt))
         self.state.begin(self.account_id, self.session.project)
         self.began = True
         self.state.update(self.account_id, {"model": self.gate.model, "reasoning_effort": self.gate.effort})
@@ -415,6 +480,9 @@ class BrowserRequest:
         deadline = time.monotonic() + 240
         while time.monotonic() < deadline and not self.terminal and not self.gate.error:
             page.wait_for_timeout(500)
+        return self.finish(cache_hit)
+
+    def finish(self, cache_hit):
         if not self.gate.sent:
             raise AdapterError(502, "start_not_sent", "Prism did not submit the turn; no request was sent upstream")
         if self.gate.error:
@@ -422,6 +490,12 @@ class BrowserRequest:
         if not self.terminal:
             raise AdapterError(504, "unknown_outcome", "Prism turn has no terminal result; pending state retained")
         status, result = self.terminal
+        if isinstance(result, AdapterError):
+            if self.request_id:
+                self.state.receipt(self.account_id, self.request_id, 1, self.polls, result, cache_hit,
+                                   model=self.gate.model, effort=self.gate.effort)
+            self.state.finish(self.account_id)
+            raise result
         if status != 200:
             raise AdapterError(502, "prism_failed", "Prism returned a failed turn")
         if not self.request_id:
@@ -429,8 +503,7 @@ class BrowserRequest:
         self.state.receipt(self.account_id, self.request_id, 1, self.polls, result, cache_hit,
                            model=self.gate.model, effort=self.gate.effort)
         self.state.finish(self.account_id)
-        if isinstance(result, AdapterError):
-            raise result
+        self.cursor = Cursor(self.start_body, self.last_data, self.snapshot) if self.start_body else None
         return self.request_id, result
 
 
@@ -499,6 +572,7 @@ class BrowserTurn:
         cache_hit = session is not None
         request = None
         succeeded = False
+        submitted = False
         try:
             if session is None:
                 while len(self.sessions) >= self.max_sessions:
@@ -514,18 +588,44 @@ class BrowserTurn:
                 session.project = parse_qs(urlparse(page.url).query).get("u", [""])[0]
                 self.state.save_project(account_id, session.project)
                 page.goto(BASE + "/?u=" + session.project + "&pg=1", wait_until="domcontentloaded", timeout=60000)
-            else:
-                # Project files belong to this explicit client session. Start a
-                # new chat tab so caller-supplied history is not appended twice.
-                session.page.get_by_role("button", name="New chat tab", exact=True).click(timeout=60000)
-            request = BrowserRequest(self.state, account_id, session, model, effort)
-            session.active = request
-            result = request.run(prompt, cache_hit)
+            plan = RelayPlan(prompt, model, effort, MAX_PROMPT_BYTES, session.relay if reuse_project else None)
+            fresh_chat = cache_hit and plan.fresh
+            retry_cursor = None
+            while plan.done < len(plan.pieces):
+                if fresh_chat:
+                    session.page.get_by_role("button", name="New chat tab", exact=True).click(timeout=60000)
+                    fresh_chat = False
+                request = BrowserRequest(self.state, account_id, session, model, effort)
+                session.active = request
+                cursor = plan.cursor or retry_cursor
+                started_at = time.monotonic()
+                try:
+                    result = (request.run_direct(cursor, plan.text, cache_hit) if cursor is not None
+                              else request.run(plan.text, cache_hit))
+                except AdapterError as error:
+                    submitted = submitted or request.gate.sent
+                    if plan.recover(error):
+                        if plan.fresh and plan.fallback_used:
+                            retry_cursor = None
+                            fresh_chat = True
+                            plan.fresh = False
+                        elif request.start_body is not None:
+                            retry_cursor = Cursor(request.start_body)
+                        continue
+                    raise
+                submitted = submitted or request.gate.sent
+                plan.accept(request.cursor, AdapterError)
+                retry_cursor = None
+                if plan.done < len(plan.pieces):
+                    remaining = PART_GAP_SECONDS - (time.monotonic() - started_at)
+                    if remaining > 0:
+                        session.page.wait_for_timeout(remaining * 1000)
+            session.relay = plan.record()
             succeeded = True
             session.used = time.monotonic()
             return result
         except Exception as error:
-            error.not_submitted = request is None or not request.gate.sent
+            error.not_submitted = not submitted and (request is None or not request.gate.sent)
             raise
         finally:
             if session is not None:
@@ -716,11 +816,14 @@ class Handler(BaseHTTPRequestHandler):
                 if bridge is not None:
                     self.tool_state.reserve(scope, bridge.calls, bridge.results, bridge.lease, bridge.needs_fresh)
                 try:
-                    args = (account_id, token, prompt, session_id, model, effort)
+                    relay_session = session_id
+                    caller = self.headers.get('X-Prism-Caller-ID', '')
+                    if session_id and caller:
+                        relay_session = digest([caller, session_id])
+                    args = (account_id, token, prompt, relay_session, model, effort)
                     if bridge is not None:
-                        # Client results already contain expanded history. A
-                        # native chat/project is not their continuation state.
-                        args += (False,)
+                        # The relay matches exact history prefixes before using native continuation.
+                        args += (True,)
                     request_id, answer = self.browser_turn.run(*args)
                 except Exception as error:
                     if bridge is not None and (getattr(error,'not_submitted',False) or

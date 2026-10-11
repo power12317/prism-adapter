@@ -36,8 +36,8 @@ Local changes to the imported modules:
   per-description cap, allowing Codex Code Mode catalogs with desktop tools.
   Missing or non-string descriptions are treated as empty optional text without
   dropping the tool, its parameters, or its custom format. String descriptions
-  are retained exactly. The aggregate bridge prompt budget and tool-call input
-  limits are unchanged.
+  are retained exactly. Tool-call input limits are unchanged; complete prompt
+  size now selects segmentation instead of rejecting at 128,000 characters.
 - Client tools use the same model and effort catalog as text requests. The
   upstream gpt-6.1-sol-only tool gate is removed; requested model and effort
   values are preserved through browser dispatch and responses.
@@ -49,7 +49,7 @@ Local changes to the imported modules:
   the upstream multiplex fixture update. This is a fixture-only compatibility fix.
 - Loopback browser smoke clients explicitly disable system proxy discovery;
   this avoids macOS proxy lookup blocking parallel local HTTP requests.
-- Source/license notices were added. The model catalog, tool policy, cache,
+- Source/license notices were added. The model catalog, tool policy,
   concurrency defaults, polling, runtime reconnect, and resource management are
   otherwise the upstream implementation.
 
@@ -58,6 +58,27 @@ bounded admission behavior as requested for sub2api parity. These settings belon
 to the adapter process; the Go client does not add a network timeout. No new
 conservative concurrency limits, model reductions, or deferred tool phase are
 introduced by the CPA integration.
+
+## Lossless segmented relay (2026-10-11)
+
+`relay_transport.py` adapts the transport design of
+[`yyyllllming/prism-bridge`](https://github.com/yyyllllming/prism-bridge)
+commit `4ba99f31508bf7856a086aaea3def89ac594051e`, distributed under MIT
+(`COPYING.PRISM-BRIDGE`). Complete JSON-escaped UTF-8 prompts are segmented,
+intermediate turns acknowledge receipt, and native response IDs/listen snapshots
+continue the conversation. A confirmed size refusal halves the budget once and
+recuts only unsent content. Successful part duration counts toward the upstream
+bridge's eight-second spacing between parts.
+
+The CPA HTTP interface, OAuth headers and tool-result identities are retained.
+History-prefix fingerprints enable caller-scoped incremental continuation within
+the existing browser cache lifetime. Raw histories are not persisted by the cache.
+An explicitly expired continuation can start a fresh chat and replay the complete
+request before any new part succeeds. Browser and multiplex modes share this plan.
+No history compaction, description truncation, effort downgrade, eight-part cap,
+or new product/deployment setting is imported. The existing HTTP request-body
+limit still bounds an individual client request. Chromium loopback coverage in
+`smoke_relay.py` exercises both modes and is included in container acceptance.
 
 Upstream source hashes are recorded in `upstream-manifest.json`. The original
 hashes describe the initial imported files; selective update commits are recorded

@@ -101,9 +101,8 @@ class ProtocolTests(unittest.TestCase):
                         self.assertEqual(payload, original)
 
     def test_other_size_limits_are_preserved(self):
-        with self.assertRaises(adapter.AdapterError) as total:
-            ToolBridge(request(tools=[dict(CUSTOM, description='x' * 128000)]), adapter)
-        self.assertEqual(total.exception.code, 'tool_request_too_large')
+        large = ToolBridge(request(tools=[dict(CUSTOM, description='x' * 128000)]), adapter)
+        self.assertIn('x' * 128000, large.prompt)
         bridge = ToolBridge(request(tools=[dict(CUSTOM, description='x' * 48754)]), adapter)
         with self.assertRaises(adapter.AdapterError) as arguments:
             bridge.value({'input':'x' * 32001}, bridge.tools['echo'])
@@ -284,8 +283,8 @@ class ToolHTTPTests(unittest.TestCase):
             count = 0
             def run(inner, account, token, prompt, session, model, effort, reuse_project=True):
                 import re
-                self.assertFalse(reuse_project)
-                self.assertEqual(session,'a'*64)
+                self.assertTrue(reuse_project)
+                self.assertEqual(session,digest(['b'*64, 'a'*64]))
                 self.assertIn(description, prompt)
                 self.assertEqual((model, effort), (requested_model, 'xhigh'))
                 inner.count += 1

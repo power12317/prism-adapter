@@ -2,7 +2,7 @@
 # Derived from ranxi2001/sub2api; see UPSTREAM.md for provenance and local changes.
 """UI-authored starts with bounded pages, then multiplexed browser polls.
 
-No model start is synthesized or replayed: the official editor submits it once.
+The editor authors the first start; planned relay parts use its native metadata.
 The first status body is captured before dispatch; subsequent polls use the
 account's stationary page and its normal fetch implementation. Unknown outcomes
 remain in the per-conversation journal.
@@ -17,6 +17,7 @@ import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
@@ -24,6 +25,7 @@ from playwright.async_api import async_playwright
 from multiplex_runtime import Admission, TurnJournal
 from browser_gate import BrowserGate
 from model_selection import select_options_async
+from relay_transport import Cursor, FETCH_JSON, PART_GAP_SECONDS, SET_EDITOR_TEXT, RelayPlan, response_snapshot
 
 
 RUNTIME_RATE_LIMIT = re.compile(
@@ -102,6 +104,7 @@ class AccountBrowser:
         self.created = self.used
         self.projects = OrderedDict()
         self.expected = {}
+        self.relays = OrderedDict()
 
     async def open(self, browser, token):
         self.context = await browser.new_context(user_agent=self.api.USER_AGENT, service_workers='block')
@@ -128,10 +131,11 @@ class AccountBrowser:
     async def route(self, route):
         try:
             request = route.request
-            if request.url == self.api.BASE + self.api.STATUS and request.method == 'POST':
+            if request.url in (self.api.BASE + self.api.STATUS, self.api.BASE + self.api.START) and request.method == 'POST':
                 body = request.post_data_json
                 grant = self.expected.get(fingerprint(body))
-                if grant is not None and not grant['sent']:
+                if (grant is not None and not grant['sent']
+                        and request.url == self.api.BASE + grant.get('path', self.api.STATUS)):
                     grant['sent'] = True
                     await route.continue_()
                     return
@@ -162,6 +166,24 @@ class AccountBrowser:
         finally:
             self.expected.pop(key, None)
 
+    async def relay_start(self, body):
+        key = fingerprint(body)
+        grant = {'sent':False, 'path':self.api.START}
+        self.expected[key] = grant
+        try:
+            result = await self.page.evaluate(FETCH_JSON, {'origin':self.api.BASE, 'path':self.api.START, 'body':body})
+            if not grant['sent'] or not isinstance(result, dict) or not result.get('status'):
+                raise self.api.AdapterError(502, 'unknown_outcome', 'Prism relay start outcome is unknown; pending state retained')
+            data = result.get('data')
+            if not isinstance(data, dict):
+                raise self.api.AdapterError(502, 'invalid_response', 'Prism relay start returned an invalid response')
+            if result['status'] != 200 and self.api.terminal_text(data) is None:
+                raise self.api.AdapterError(502, 'prism_failed',
+                    'Prism relay start failed; upstream_status=' + str(result['status']))
+            return data
+        finally:
+            self.expected.pop(key, None)
+
     async def create_project(self):
         # This UUID is the official projects API's client-assigned idempotency
         # key. Never use it for model metadata unless the server confirms it.
@@ -181,6 +203,7 @@ class AccountBrowser:
         context, self.context = self.context, None
         self.page = None
         self.projects.clear()
+        self.relays.clear()
         if context is not None:
             await context.close()
 
@@ -205,6 +228,7 @@ class BrowserStart:
         self.start_attempts = 0
         self.intent = None
         self.reconnects = 0
+        self.start_body = None
 
     async def route(self, route):
         try:
@@ -224,6 +248,7 @@ class BrowserStart:
                     self.start_attempts += 1
                     self.sent = True
                     self.start_request = request
+                    self.start_body = body
                     self.start_fingerprint = fingerprint(body)
                     await route.continue_()
                     return
@@ -249,7 +274,15 @@ class BrowserStart:
             if fingerprint(response.request.post_data_json) != self.start_fingerprint:
                 return
             data = await response.json()
-            if response.status != 200 or not isinstance(data, dict):
+            if not isinstance(data, dict):
+                self.start_response.set_result(None)
+                return
+            terminal = self.api.terminal_text(data)
+            if isinstance(terminal, self.api.AdapterError) and getattr(terminal, 'replay_safe', False):
+                self.request_id = data.get('request_id') or ''
+                self.start_response.set_result(data)
+                return
+            if response.status != 200:
                 self.start_response.set_result(None)
                 return
             request_id = data.get('request_id')
@@ -301,7 +334,7 @@ class BrowserStart:
         self.phase = 'selecting_model_and_effort'
         await select_options_async(page, self.model, self.effort, self.api.AdapterError)
         self.phase = 'submitting'
-        await textarea.fill(prompt)
+        await textarea.evaluate(SET_EDITOR_TEXT, str(prompt))
         self.journal.update(stage='submitting', project_id=self.project, model=self.model, reasoning_effort=self.effort)
         self.armed = True
         await textarea.press('Enter')
@@ -429,107 +462,153 @@ class MultiplexBrowser:
             actor.refs += 1
             return actor
 
+    async def prepare_start(self, actor, start, journal, prompt, model, effort):
+        async with self.bootstrap:
+            await self.wait_for_memory(actor, journal)
+            self.preparing += 1
+            self.observe('prism_prepare_start', journal, model=model, effort=effort)
+            try:
+                try:
+                    data, body = await start.run(prompt)
+                except self.api.AdapterError:
+                    raise
+                except Exception:
+                    disposition = 'inspect pending state' if start.sent else 'model request was not submitted'
+                    raise self.api.AdapterError(502, 'preparation_failed',
+                        'Prism preparation failed at ' + start.phase + '; ' + disposition) from None
+            finally:
+                try:
+                    await start.close()
+                    await self.collect_closed_pages(actor)
+                finally:
+                    self.preparing -= 1
+                    self.observe('prism_prepare_end', journal, submitted=start.sent)
+            if start.violation:
+                raise self.api.AdapterError(502, 'unexpected_start', 'Prism attempted an unexpected model start')
+            return data, body
+
     async def run(self, account_id, token, prompt, session_id=None, model=None, effort='medium', reuse_project=True):
         model = self.api.MODEL if model is None else model
         async with self.admission.enter(account_id, session_id):
             journal = TurnJournal(self.state, self.api, account_id, session_id)
             actor = start = None
-            succeeded = False
+            succeeded = submitted = known_terminal = False
             try:
                 journal.begin()
                 if time.monotonic() < self.runtime_cooldowns.get(account_id, 0):
                     raise self.api.AdapterError(429, 'project_runtime_rate_limited',
                         'Prism runtime startup is cooling down; model request was not submitted')
                 actor = await self.account(account_id, token)
-                start = BrowserStart(self, actor, journal, session_id if reuse_project else None, model, effort)
-                async with self.bootstrap:
-                    if time.monotonic() < self.runtime_cooldowns.get(account_id, 0):
-                        raise self.api.AdapterError(429, 'project_runtime_rate_limited',
-                            'Prism runtime startup is cooling down; model request was not submitted')
-                    await self.wait_for_memory(actor, journal)
-                    self.preparing += 1
-                    self.observe('prism_prepare_start', journal, model=model, effort=effort)
-                    try:
-                        try:
-                            data, body = await start.run(prompt)
-                        except self.api.AdapterError:
-                            raise
-                        except Exception:
-                            disposition = 'inspect pending state' if start.sent else 'model request was not submitted'
-                            raise self.api.AdapterError(502, 'preparation_failed',
-                                'Prism preparation failed at ' + start.phase + '; ' + disposition) from None
-                    finally:
-                        try:
-                            await start.close()
-                            await self.collect_closed_pages(actor)
-                        finally:
-                            self.preparing -= 1
-                            self.observe('prism_prepare_end', journal, submitted=start.sent)
-                    if start.violation:
-                        raise self.api.AdapterError(502, 'unexpected_start', 'Prism attempted an unexpected model start')
-                needs_poll = self.api.terminal_text(data) is None
-                if needs_poll:
-                    self.polling += 1
-                    self.observe('prism_poll_start', journal, model=model, effort=effort)
-                try:
-                    polls = 0
-                    while self.api.terminal_text(data) is None:
-                        # Only the trusted response may rotate the opaque turn state.
-                        if isinstance(data.get('turn_state'), (str, dict)) and data['turn_state']:
-                            body['turn_state'] = data['turn_state']
-                        data = await actor.poll(body)
-                        polls += 1
-                        if data.get('request_id') not in (None, '', start.request_id):
-                            raise self.api.AdapterError(502, 'foreign_response', 'Prism returned a different request identity')
-                        journal.update(stage='polling', request_id=start.request_id, turn_state=data.get('turn_state', body.get('turn_state')))
-                        if self.api.terminal_text(data) is None:
-                            jitter = int(journal.local_id[:2], 16) / 255 * 0.25
-                            await asyncio.sleep(self.poll_seconds + jitter)
-                finally:
+                saved = getattr(actor, 'relays', {}).get(session_id) if session_id and reuse_project else None
+                plan = RelayPlan(prompt, model, effort, self.api.MAX_PROMPT_BYTES, saved)
+                retry_cursor = None
+                while plan.done < len(plan.pieces):
+                    started_at = time.monotonic()
+                    cursor = plan.cursor or retry_cursor
+                    known_terminal = False
+                    if cursor is None:
+                        start = BrowserStart(self, actor, journal, session_id if reuse_project else None, model, effort)
+                        data, body = await self.prepare_start(actor, start, journal, plan.text, model, effort)
+                        start_body = getattr(start, 'start_body', None)
+                    else:
+                        start_body = cursor.body(plan.text)
+                        start = SimpleNamespace(sent=True, request_id='', project=start_body['metadata']['projectId'],
+                                                cache_hit=True, start_attempts=1, phase='relay_start')
+                        journal.update(stage='submitting', project_id=start.project, model=model,
+                                       reasoning_effort=effort, relay_parts_completed=plan.done)
+                        data = await actor.relay_start(start_body)
+                        start.request_id = data.get('request_id') or ''
+                        body = {'request_id':start.request_id, 'turn_state':data.get('turn_state')}
+                    submitted = submitted or start.sent
+                    snapshot = response_snapshot(data)
+                    needs_poll = self.api.terminal_text(data) is None
                     if needs_poll:
-                        self.polling -= 1
-                        self.observe('prism_poll_end', journal)
-                result = self.api.terminal_text(data)
-                self.state.receipt(account_id, start.request_id, getattr(start, 'start_attempts', 1), polls, result, start.cache_hit, model=model, effort=effort)
+                        if not start.request_id:
+                            raise self.api.AdapterError(502, 'missing_request_id', 'Prism turn lacks a request identifier; pending state retained')
+                        self.polling += 1
+                        self.observe('prism_poll_start', journal, model=model, effort=effort)
+                    polls = 0
+                    try:
+                        while self.api.terminal_text(data) is None:
+                            if isinstance(data.get('turn_state'), (str, dict)) and data['turn_state']:
+                                body['turn_state'] = data['turn_state']
+                            data = await actor.poll(body)
+                            polls += 1
+                            if data.get('request_id') not in (None, '', start.request_id):
+                                raise self.api.AdapterError(502, 'foreign_response', 'Prism returned a different request identity')
+                            snapshot = response_snapshot(data, snapshot)
+                            journal.update(stage='polling', request_id=start.request_id,
+                                           turn_state=data.get('turn_state', body.get('turn_state')))
+                            if self.api.terminal_text(data) is None:
+                                jitter = int(journal.local_id[:2], 16) / 255 * 0.25
+                                await asyncio.sleep(self.poll_seconds + jitter)
+                    finally:
+                        if needs_poll:
+                            self.polling -= 1
+                            self.observe('prism_poll_end', journal)
+                    result = self.api.terminal_text(data)
+                    known_terminal = True
+                    if start.request_id:
+                        self.state.receipt(account_id, start.request_id, getattr(start, 'start_attempts', 1), polls,
+                                           result, start.cache_hit, model=model, effort=effort)
+                    if isinstance(result, self.api.AdapterError):
+                        response = data.get('response') if isinstance(data.get('response'), dict) else {}
+                        self.observe('prism_upstream_terminal_failure', journal,
+                            response_failed=response.get('status') in ('failed', 'error'),
+                            turn_failed=data.get('status') in ('failed', 'error'), from_start=polls == 0,
+                            reason=self.api.terminal_failure_reason(data), **self.api.terminal_failure_diagnostics(data))
+                        if plan.recover(result):
+                            if plan.fresh and plan.fallback_used:
+                                retry_cursor = None
+                                plan.fresh = False
+                            elif start_body is not None:
+                                retry_cursor = Cursor(start_body)
+                            continue
+                        raise result
+                    plan.accept(Cursor(start_body, data, snapshot) if start_body else None, self.api.AdapterError)
+                    retry_cursor = None
+                    if plan.done < len(plan.pieces):
+                        remaining = PART_GAP_SECONDS - (time.monotonic() - started_at)
+                        if remaining > 0:
+                            await asyncio.sleep(remaining)
                 journal.finish()
-                if isinstance(result, self.api.AdapterError):
-                    response = data.get('response') if isinstance(data.get('response'), dict) else {}
-                    self.observe('prism_upstream_terminal_failure', journal,
-                        response_failed=response.get('status') in ('failed', 'error'),
-                        turn_failed=data.get('status') in ('failed', 'error'),
-                        from_start=polls == 0,
-                        reason=self.api.terminal_failure_reason(data),
-                        **self.api.terminal_failure_diagnostics(data))
-                    raise result
                 if session_id and reuse_project:
                     actor.projects[session_id] = (start.project, time.monotonic())
                     actor.projects.move_to_end(session_id)
+                    if hasattr(actor, 'relays'):
+                        record = plan.record()
+                        if record:
+                            actor.relays[session_id] = record
+                        else:
+                            actor.relays.pop(session_id, None)
                     while len(actor.projects) > 128:
-                        actor.projects.popitem(last=False)
+                        evicted, _ = actor.projects.popitem(last=False)
+                        if hasattr(actor, 'relays'):
+                            actor.relays.pop(evicted, None)
                 succeeded = True
-                self.observe('prism_turn_complete', journal, model=model, effort=effort, polls=polls)
+                self.observe('prism_turn_complete', journal, model=model, effort=effort, parts=plan.done)
                 return start.request_id, result
             except Exception as error:
                 if getattr(error, 'code', None) == 'project_runtime_rate_limited' and time.monotonic() >= self.runtime_cooldowns.get(account_id, 0):
                     self.runtime_cooldowns[account_id] = time.monotonic() + 60
-                self.observe('prism_turn_error', journal,
-                    code=getattr(error, 'code', type(error).__name__),
-                    phase=getattr(start, 'phase', 'account_preparation'),
-                    submitted=start is not None and start.sent)
-                error.not_submitted = start is None or not start.sent
+                self.observe('prism_turn_error', journal, code=getattr(error, 'code', type(error).__name__),
+                    phase=getattr(start, 'phase', 'account_preparation'), submitted=submitted or (start is not None and start.sent))
+                error.not_submitted = not submitted and (start is None or not start.sent)
                 raise
             finally:
                 try:
-                    if start is not None:
+                    if start is not None and hasattr(start, 'close'):
                         await start.close()
                 finally:
                     try:
-                        if (start is None or not start.sent) and journal.owned:
+                        if (known_terminal or start is None or not start.sent) and journal.owned:
                             journal.finish()
                     finally:
                         if actor is not None:
                             if not succeeded and session_id:
                                 actor.projects.pop(session_id, None)
+                                if hasattr(actor, 'relays'):
+                                    actor.relays.pop(session_id, None)
                             actor.refs -= 1
                             actor.used = time.monotonic()
 

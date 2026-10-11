@@ -30,6 +30,7 @@ docker run "${flags[@]}" "$PRISM_ADAPTER_IMAGE" sh -ec '
   python tests/sandbox_probe.py
   python smoke_browser.py --chrome "$PRISM_ADAPTER_CHROME"
   python smoke_client_tools.py --chrome "$PRISM_ADAPTER_CHROME"
+  python smoke_relay.py --chrome "$PRISM_ADAPTER_CHROME"
   python smoke_multiplex.py --chrome "$PRISM_ADAPTER_CHROME" --concurrency 3 --model gpt-6.1-sol --effort xhigh --rounds 2 --reconnect-first
 '
 "${dc[@]}" up -d --wait --wait-timeout 120 --pull never

@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 
 from tool_state import digest
+from relay_transport import RelayPrompt
 
 NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_.-]{0,127}$')
 CALL = re.compile(r'^call_prism_[a-f0-9]{32}$')
@@ -24,7 +25,6 @@ MAX_TOOLS = 96
 MAX_CALLS = 8
 MAX_HISTORY_CALLS = 64
 MAX_TOOL_CHARS = 32000
-MAX_BRIDGE_CHARS = 128000
 
 
 def strict_json(raw):
@@ -131,10 +131,15 @@ class ToolBridge:
         if self.unavailable:
             policy += ('\nUnavailable hosted tools: '+', '.join(sorted(self.unavailable))+
                        '. They are not callable through this bridge. State the limitation if the user needs one; never claim to have used one.')
-        self.prompt = policy + '\n\nBEGIN_CLIENT_HISTORY\n' + self.prompt + '\nEND_CLIENT_HISTORY\n' + (
-            'Respond using ' + self.marker + ' and the JSON protocol above. Do not execute any remote sandbox tool.')
-        if len(self.prompt) > MAX_BRIDGE_CHARS:
-            self.reject('tool_request_too_large', 'Tool catalog and history exceed the Prism bridge limit')
+        history = self.prompt
+        suffix = ('\nEND_CLIENT_HISTORY\nRespond using ' + self.marker +
+                  ' and the JSON protocol above. Do not execute any remote sandbox tool.')
+        prefix = policy + '\n\nBEGIN_CLIENT_HISTORY\n' + history.prefix
+        self.prompt = RelayPrompt(prefix, history.entries, suffix,
+            context=(prefix + suffix).replace(self.marker, 'PRISM_CLIENT_TOOLS_V1'),
+            delta_prefix=('Continue the same client request protocol and tool catalog. '
+                          'For this response replace the previous marker with ' + self.marker +
+                          '. The following are new client history entries.\nBEGIN_CLIENT_HISTORY\n'))
 
     def reject(self, code, message):
         raise self.error(422, code, message)
