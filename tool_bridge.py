@@ -78,8 +78,6 @@ class ToolBridge:
         self.tools, self.calls, self.results = {}, {}, {}
         self.unavailable = set()
         self.commands = []
-        if payload.get('model') != 'gpt-6.1-sol':
-            self.reject('unsupported_tool_model', 'Client tool bridge currently requires gpt-6.1-sol')
         self.parallel = payload.get('parallel_tool_calls', True)
         if not isinstance(self.parallel, bool):
             self.reject('invalid_tools', 'parallel_tool_calls must be a boolean')

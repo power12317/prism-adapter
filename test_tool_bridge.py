@@ -37,6 +37,23 @@ def call_output(bridge, name='lookup', value=None):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_tools_use_the_text_model_and_effort_catalog(self):
+        for model in adapter.MODELS:
+            for effort in adapter.EFFORTS:
+                with self.subTest(model=model, effort=effort):
+                    payload = request(model=model, reasoning={'effort':effort})
+                    bridge = ToolBridge(payload, adapter)
+                    self.assertEqual(set(bridge.tools), {'lookup', 'echo'})
+                    self.assertEqual(payload['model'], model)
+                    self.assertEqual(payload['reasoning']['effort'], effort)
+
+    def test_tools_keep_the_shared_model_and_effort_validation(self):
+        for fields, code in (({'model':'unknown-model'}, 'unsupported_model'),
+                             ({'reasoning':{'effort':'unknown-effort'}}, 'unsupported_reasoning')):
+            with self.subTest(fields=fields), self.assertRaises(adapter.AdapterError) as raised:
+                ToolBridge(request(**fields), adapter)
+            self.assertEqual(raised.exception.code, code)
+
     def test_long_tool_descriptions_are_preserved_in_all_catalog_locations(self):
         description = 'x' * 48753 + 'Z'
         for definition in (dict(FUNCTION, description=description), dict(CUSTOM, description=description)):
@@ -256,6 +273,12 @@ class ToolStateTests(unittest.TestCase):
 
 class ToolHTTPTests(unittest.TestCase):
     def test_function_and_custom_roundtrip_over_real_http_sse(self):
+        for model in adapter.MODELS:
+            for stream in (False, True):
+                with self.subTest(model=model, stream=stream):
+                    self._assert_tool_roundtrip(model, stream)
+
+    def _assert_tool_roundtrip(self, requested_model, stream):
         description = 'x' * 48753 + 'Z'
         class Browser:
             count = 0
@@ -264,6 +287,7 @@ class ToolHTTPTests(unittest.TestCase):
                 self.assertFalse(reuse_project)
                 self.assertEqual(session,'a'*64)
                 self.assertIn(description, prompt)
+                self.assertEqual((model, effort), (requested_model, 'xhigh'))
                 inner.count += 1
                 marker = re.search(r'PRISM_CLIENT_TOOLS_V1:[a-f0-9]+',prompt).group()
                 if inner.count == 1:
@@ -282,17 +306,24 @@ class ToolHTTPTests(unittest.TestCase):
             server=ThreadingHTTPServer(('127.0.0.1',0),handler)
             threading.Thread(target=server.serve_forever,daemon=True).start()
             try:
-                payload=request(tools=[dict(FUNCTION,description=None),dict(CUSTOM,description=description)], stream=True,
-                    include=['reasoning.encrypted_content'], reasoning={'effort':'medium','summary':'detailed'})
+                payload=request(model=requested_model,
+                    tools=[dict(FUNCTION,description=None),dict(CUSTOM,description=description)], stream=stream,
+                    include=['reasoning.encrypted_content'], reasoning={'effort':'xhigh','summary':'detailed'})
                 headers={'X-Prism-Account-ID':'300',
                     'X-Prism-OAuth-Token':'synthetic','X-Prism-Session-ID':'a'*64,'X-Prism-Caller-ID':'b'*64,'Content-Type':'application/json'}
                 def send(headers_=headers):
                     req=Request(f'http://127.0.0.1:{server.server_port}/v1/responses',data=json.dumps(payload).encode(),headers=headers_)
                     with urlopen(req,timeout=10) as reply:
-                        events=[json.loads(line[6:]) for line in reply.read().decode().splitlines() if line.startswith('data: ')]
-                    self.assertEqual(events[-1]['type'],'response.completed')
-                    self.assertFalse(any(e['type'].endswith('.delta') for e in events))
-                    return events[-1]['response']
+                        raw = reply.read().decode()
+                    if stream:
+                        events=[json.loads(line[6:]) for line in raw.splitlines() if line.startswith('data: ')]
+                        self.assertEqual(events[-1]['type'],'response.completed')
+                        self.assertFalse(any(e['type'].endswith('.delta') for e in events))
+                        response = events[-1]['response']
+                    else:
+                        response = json.loads(raw)
+                    self.assertEqual((response['model'], response['reasoning']['effort']), (requested_model, 'xhigh'))
+                    return response
                 with self.assertRaises(HTTPError) as missing:
                     send({k:v for k,v in headers.items() if k!='X-Prism-Caller-ID'})
                 self.assertEqual(missing.exception.code,400)

@@ -105,6 +105,8 @@ curl --fail-with-body -N "$CPA_URL/v1/responses" \
 
 Prism 的 SSE 返回完成后的事件和 `response.completed`，不是逐 token delta；`usage` 为 null 是当前协议行为。首次调用会按需启动 Chromium。
 
+客户端工具请求与文本请求共用现有四模型目录：`gpt-6.1-sol`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6-luna`。适配器不再把带工具的请求限定为 Sol；请求的模型和推理强度原样保留，实际可用性仍取决于账号在 Prism 中的选项。此次兼容调整只需更新适配器。
+
 镜像内提供可选的真实账号工具示例，无需在服务器安装 Python：
 
 ```sh

@@ -38,6 +38,9 @@ Local changes to the imported modules:
   dropping the tool, its parameters, or its custom format. String descriptions
   are retained exactly. The aggregate bridge prompt budget and tool-call input
   limits are unchanged.
+- Client tools use the same model and effort catalog as text requests. The
+  upstream gpt-6.1-sol-only tool gate is removed; requested model and effort
+  values are preserved through browser dispatch and responses.
 - The client-tool smoke fixture initializes the reconnect fields introduced by
   the upstream multiplex fixture update. This is a fixture-only compatibility fix.
 - Loopback browser smoke clients explicitly disable system proxy discovery;

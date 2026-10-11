@@ -47,13 +47,15 @@ The client-tool catalog and framing retain their separate upstream size limit.
 CPA applies ordinary payload rules once after built-in model, reasoning and stream
 preparation, preserving configured overrides and removals through dispatch.
 
-The client-tool bridge follows upstream: enabled by default for **gpt-6.1-sol**,
-with function/custom tools, nested namespaces, additional_tools, tool_choice, and
-parallel_tool_calls. Tools execute at the client. Subsequent requests carry the
-complete call/result history and original tool catalog. Each tool turn uses a
+The client-tool bridge is enabled by default for the same four-model catalog as
+text requests, with function/custom tools, nested namespaces, additional_tools,
+tool_choice, and parallel_tool_calls. It preserves the requested model and effort;
+the upstream restriction to gpt-6.1-sol has been removed. Tools execute at the
+client. Subsequent requests carry the complete call/result history and original
+tool catalog. Each tool turn uses a
 fresh project, while caller/account/conversation identity and call consumption
-are preserved. CPA forwards tools according to this upstream policy without a
-separate tool setting. Both processes must be upgraded together.
+are preserved. CPA forwards tools without a separate tool setting. This model
+compatibility change requires only an adapter update.
 
 Prism returns completed responses rather than token deltas. SSE includes completed
 text/tool items and a final response. Usage remains null; CPA publishes
