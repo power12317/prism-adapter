@@ -144,6 +144,92 @@ class AdapterTests(unittest.TestCase):
             "status": "success", "payload": {"output": [{"type": "message", "content": [{"text": "21"}]}]}
         }}), "21")
 
+    def test_terminal_failure_reason_is_preserved_at_both_status_levels(self):
+        for turn_status in ('completed', 'failed', 'error'):
+            for response_status in ('failed', 'error'):
+                for reason, status in (('sandbox_reconnecting', 503),
+                                       ('project_edit_access_required', 403),
+                                       ('conversation_too_large', 422)):
+                    with self.subTest(turn=turn_status, response=response_status, reason=reason):
+                        result = adapter.terminal_text({'status': turn_status, 'response': {
+                            'status': response_status, 'payload': {'reason': reason}}})
+                        self.assertIsInstance(result, adapter.AdapterError)
+                        self.assertEqual((result.status, result.code), (status, reason))
+        for response in (None, 'invalid', {}, {'status': 'success'}):
+            with self.subTest(response=response):
+                result = adapter.terminal_text({'status': 'failed', 'response': response})
+                self.assertEqual((result.status, result.code), (502, 'prism_failed'))
+        self.assertIsNone(adapter.terminal_text({'status': 'running', 'response': {
+            'status': 'error', 'payload': {'reason': 'sandbox_reconnecting'}}}))
+
+    def test_terminal_failure_message_contains_only_sanitized_evidence(self):
+        result = adapter.terminal_text({'status': 'error', 'request_id': 'secret-request',
+            'turn_state': 'secret-state', 'response': {'status': 'failed', 'payload': {
+                'reason': 'secret-reason', 'message': 'workspace sync timeout secret-prompt',
+                'rootCause': 'network connection secret-token', 'diagnostics': {
+                    'code': 'workspace_sync_timeout', 'operation': 'check_status',
+                    'httpStatus': 504, 'requestId': 'secret-id', 'token': 'secret-token'}}}})
+        self.assertEqual((result.status, result.code), (502, 'prism_failed'))
+        for evidence in ('turn_status=error', 'response_status=failed',
+                         'upstream_code=workspace_sync_timeout', 'upstream_operation=check_status',
+                         'upstream_status=504', 'upstream_hints=sync,timeout,connection'):
+            self.assertIn(evidence, str(result))
+        self.assertNotIn('secret', str(result))
+        for details in (None, 'secret', {'code': 'secret', 'operation': 'secret', 'httpStatus': True},
+                        {'httpStatus': '504'}, {'httpStatus': 600}):
+            with self.subTest(details=details):
+                result = adapter.terminal_text({'status': 'failed', 'response': {
+                    'status': 'secret', 'payload': {'diagnostics': details}}})
+                self.assertEqual(str(result), 'Prism turn failed (turn_status=failed)')
+
+    def test_http_tool_failure_preserves_diagnostics_for_request_logs(self):
+        class FailedBrowser:
+            status = 'failed'
+
+            def run(self, account_id, token, prompt, session_id, model, effort, reuse_project):
+                self.options = (model, effort, reuse_project)
+                raise adapter.terminal_text({'status': self.status, 'response': {
+                    'status': 'error', 'payload': {'reason': 'conversation_too_large',
+                        'message': 'secret-prompt', 'rootCause': 'secret-token',
+                        'diagnostics': {'code': 'server_error', 'operation': 'start', 'httpStatus': 413}}}})
+
+        fake = FailedBrowser()
+        with tempfile.TemporaryDirectory() as directory:
+            handler = type('FailureHandler', (adapter.Handler,), {
+                'browser_turn': fake, 'tool_state': adapter.ToolState(directory, adapter.AdapterError)})
+            server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+            server.daemon_threads = True
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                url = f'http://127.0.0.1:{server.server_port}/v1/responses'
+                headers = {'X-Prism-Account-ID': '300', 'X-Prism-OAuth-Token': 'secret-oauth',
+                           'X-Prism-Caller-ID': 'a' * 64, 'Content-Type': 'application/json'}
+                for turn_status in ('completed', 'failed', 'error'):
+                    fake.status = turn_status
+                    for stream in (False, True):
+                        with self.subTest(turn=turn_status, stream=stream):
+                            data = json.dumps({'model': 'gpt-6-luna', 'reasoning': {'effort': 'xhigh'},
+                                'input': 'hi', 'stream': stream, 'tools': [{'type': 'function',
+                                    'name': 'fixture', 'parameters': {'type': 'object', 'properties': {}}}]}).encode()
+                            with self.assertRaises(HTTPError) as raised:
+                                urlopen(Request(url, data=data, headers=headers), timeout=5)
+                            with raised.exception as response:
+                                self.assertEqual(response.code, 422)
+                                self.assertEqual(response.headers.get_content_type(), 'application/json')
+                                error = json.load(response)['error']
+                            self.assertEqual(error['type'], 'conversation_too_large')
+                            self.assertIn('Prism conversation exceeds the upstream limit', error['message'])
+                            self.assertIn('upstream_code=server_error', error['message'])
+                            self.assertIn('upstream_operation=start', error['message'])
+                            self.assertIn('upstream_status=413', error['message'])
+                            self.assertNotIn('secret', json.dumps(error))
+                            self.assertEqual(fake.options, ('gpt-6-luna', 'xhigh', False))
+            finally:
+                server.shutdown()
+                server.server_close()
+                worker.join()
+
     def test_pending_journal_blocks_ambiguous_replay(self):
         with tempfile.TemporaryDirectory() as directory:
             state = adapter.State(directory)
@@ -372,6 +458,27 @@ def run_turn(state, on_submit):
 
 
 class BrowserTurnTests(unittest.TestCase):
+    def test_failed_turn_preserves_upstream_error_and_releases_the_account(self):
+        for path in (adapter.START, adapter.STATUS):
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as directory:
+                def submit(page):
+                    page.browser_request(adapter.START, VALID_START)
+                    if path == adapter.STATUS:
+                        page.server_response(adapter.START, {'request_id': 'fixture-request'})
+                        page.browser_request(adapter.STATUS, {'request_id': 'fixture-request'})
+                    page.server_response(path, {'request_id': 'fixture-request', 'status': 'failed',
+                        'response': {'status': 'error', 'payload': {'reason': 'conversation_too_large',
+                            'diagnostics': {'operation': 'start', 'httpStatus': 413}}}})
+
+                state = adapter.State(directory)
+                with self.assertRaises(adapter.AdapterError) as raised:
+                    run_turn(state, submit)
+                self.assertEqual((raised.exception.status, raised.exception.code), (422, 'conversation_too_large'))
+                self.assertIn('upstream_status=413', str(raised.exception))
+                self.assertFalse((state.pending / '300').exists())
+                receipt = json.loads(next(state.receipts.iterdir()).read_text())
+                self.assertEqual(receipt['error_code'], 'conversation_too_large')
+
     def test_turn_that_never_left_the_browser_releases_the_account(self):
         # Enter was pressed but the page sent no start, e.g. the editor or
         # model control had not initialized. Nothing reached Prism.

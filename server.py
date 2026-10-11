@@ -148,6 +148,29 @@ def terminal_failure_diagnostics(data):
     return result
 
 
+def terminal_failure(data):
+    reason = terminal_failure_reason(data)
+    status, code, message = {
+        'sandbox_reconnecting': (503, 'sandbox_reconnecting', 'Prism project runtime is reconnecting'),
+        'project_edit_access_required': (403, 'project_edit_access_required', 'Prism project edit access is required'),
+        'conversation_too_large': (422, 'conversation_too_large', 'Prism conversation exceeds the upstream limit'),
+    }.get(reason, (502, 'prism_failed', 'Prism turn failed'))
+    details = {}
+    if data.get('status') in ('completed', 'failed', 'error'):
+        details['turn_status'] = data['status']
+    response = data.get('response')
+    if isinstance(response, dict) and response.get('status') in ('success', 'failed', 'error'):
+        details['response_status'] = response['status']
+    details.update(terminal_failure_diagnostics(data))
+    if details:
+        # CPA retains error.type and error.message only. Include sanitized
+        # diagnostics here so downloadable request logs retain the evidence.
+        message += ' (' + '; '.join(
+            key + '=' + (','.join(value) if isinstance(value, list) else str(value))
+            for key, value in details.items()) + ')'
+    return AdapterError(status, code, message)
+
+
 def terminal_text(data):
     if not isinstance(data, dict):
         return None
@@ -155,18 +178,11 @@ def terminal_text(data):
     if data.get("status") not in ("completed", "failed", "error"):
         return None
     if data.get("status") in ("failed", "error"):
-        return AdapterError(502, "prism_failed", "Prism turn failed")
+        return terminal_failure(data)
     if not isinstance(response, dict) or response.get("status") not in ("success", "failed", "error"):
         return None
     if response.get("status") in ("failed", "error"):
-        reason = terminal_failure_reason(data)
-        if reason == 'sandbox_reconnecting':
-            return AdapterError(503, 'sandbox_reconnecting', 'Prism project runtime is reconnecting')
-        if reason == 'project_edit_access_required':
-            return AdapterError(403, 'project_edit_access_required', 'Prism project edit access is required')
-        if reason == 'conversation_too_large':
-            return AdapterError(422, 'conversation_too_large', 'Prism conversation exceeds the upstream limit')
-        return AdapterError(502, "prism_failed", "Prism turn failed")
+        return terminal_failure(data)
     output = (response.get("payload") or {}).get("output") or []
     texts = [part.get("text", "") for item in output if isinstance(item, dict) and item.get("type") == "message"
              for part in item.get("content", []) if isinstance(part, dict) and isinstance(part.get("text"), str)]

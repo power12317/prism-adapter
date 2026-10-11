@@ -513,13 +513,17 @@ class TerminalConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                     self.phase='awaiting_start'
                 async def run(self,_prompt):
                     self.sent=True
-                    return {'request_id':self.request_id,'status':'failed'},None
+                    return {'request_id':self.request_id,'status':'failed','response':{
+                        'status':'error','payload':{'reason':'conversation_too_large',
+                            'diagnostics':{'operation':'start','httpStatus':413}}}},None
                 async def close(self):pass
             with mock.patch.object(multiplex_browser,'BrowserStart',Start), \
                     mock.patch.object(multiplex_browser,'cgroup_memory_bytes',lambda:None), \
                     mock.patch.object(engine,'observe') as observe:
-                with self.assertRaises(adapter.AdapterError):
+                with self.assertRaises(adapter.AdapterError) as raised:
                     await engine.run('300','fixture','prompt','session','gpt-6.1-sol','xhigh')
+            self.assertEqual((raised.exception.status,raised.exception.code),(422,'conversation_too_large'))
+            self.assertIn('upstream_status=413',str(raised.exception))
             events=[c.args[0] for c in observe.call_args_list]
             self.assertNotIn('prism_poll_start',events)
             self.assertIn('prism_upstream_terminal_failure',events)

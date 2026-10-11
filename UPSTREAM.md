@@ -41,6 +41,10 @@ Local changes to the imported modules:
 - Client tools use the same model and effort catalog as text requests. The
   upstream gpt-6.1-sol-only tool gate is removed; requested model and effort
   values are preserved through browser dispatch and responses.
+- Top-level and nested terminal failures share the same upstream reason mapping.
+  Allowlisted diagnostic enums, HTTP status and keyword hints are included in
+  the HTTP error message so CPA's downloadable request logs retain them. Raw
+  upstream messages, request content, credentials and turn state are not exposed.
 - The client-tool smoke fixture initializes the reconnect fields introduced by
   the upstream multiplex fixture update. This is a fixture-only compatibility fix.
 - Loopback browser smoke clients explicitly disable system proxy discovery;
